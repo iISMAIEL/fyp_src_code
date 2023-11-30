@@ -154,6 +154,30 @@ int main(int argc, char** argv) {
 
     uav.TakeOff(action);
 
+    
+
+    typedef ImageCaptureBase::ImageRequest ImageRequest;
+    typedef ImageCaptureBase::ImageResponse ImageResponse;
+    typedef ImageCaptureBase::ImageType ImageType;
+
+    // for car use
+    // CarRpcLibClient client;
+    MultirotorRpcLibClient client;
+
+    // get right, left and depth images. First two as png, second as float16.
+    std::vector<ImageRequest> request = {
+        //png format
+        ImageRequest("0", ImageType::Scene),
+        //uncompressed RGB array bytes
+        ImageRequest("1", ImageType::Scene, false, false),
+        //floating point uncompressed image  
+        ImageRequest("1", ImageType::DepthPlanar, true)
+    };
+
+    const std::vector<ImageResponse>& response = client.simGetImages(request);
+
+    std::cout << "Size of the vector: " << response.size() << std::endl;
+
     uav.Hover(action, 20);
 
     uav.Land(action, telemetry);

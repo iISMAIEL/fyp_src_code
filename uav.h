@@ -4,6 +4,14 @@
 #define MLPACK_PRINT_INFO
 #define MLPACK_PRINT_WARN
 
+#include "common/common_utils/StrictMode.hpp"
+STRICT_MODE_OFF
+#ifndef RPCLIB_MSGPACK
+#define RPCLIB_MSGPACK clmdep_msgpack
+#endif // !RPCLIB_MSGPACK
+#include "rpc/rpc_error.h"
+STRICT_MODE_ON
+
 #include <mlpack/mlpack.hpp>
 #include <vehicles/multirotor/api/MultirotorRpcLibClient.hpp>
 
@@ -21,7 +29,7 @@ using namespace mavsdk;
 using std::chrono::seconds;
 using std::this_thread::sleep_for;
 
-
+using namespace msr::airlib;
 
 
 
