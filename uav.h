@@ -24,6 +24,7 @@ STRICT_MODE_ON
 #include <future>
 #include <memory>
 #include <thread>
+#include <fstream>
 
 using namespace mavsdk;
 using std::chrono::seconds;

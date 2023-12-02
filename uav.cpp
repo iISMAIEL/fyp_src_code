@@ -132,6 +132,7 @@ bool UAV::DisArm(mavsdk::Action &action)
 
 int main(int argc, char** argv) {
 
+
     UAV uav;
 
     Mavsdk mavsdk;
@@ -150,35 +151,71 @@ int main(int argc, char** argv) {
 
     mavsdk::Action action = Action{ system };
 
+    //typedef ImageCaptureBase::ImageRequest ImageRequest;
+    //typedef ImageCaptureBase::ImageResponse ImageResponse;
+    //typedef ImageCaptureBase::ImageType ImageType;
+
+    //MultirotorRpcLibClient client;
+
+    //// Create image requests for stereo cameras and depth images
+    //std::vector<ImageRequest> request = {
+    //    // Request RGB image from the left stereo camera
+    //    ImageRequest("StereoLeft", ImageType::Scene, false, false), // Uncompressed RGB
+    //    // Request RGB image from the right stereo camera
+    //   // ImageRequest("StereoRight", ImageType::Scene, false, false), // Uncompressed RGB
+    //    // Request depth image (assuming from the left camera, adjust if necessary)
+    //    //ImageRequest("StereoLeft", ImageType::DepthPerspective, true) // Floating point depth image
+    //};
+
+    //// Retrieve images
+    //const std::vector<ImageResponse>& response = client.simGetImages(request);
+
+    
+
     uav.Arm(action);
 
     uav.TakeOff(action);
 
     
+    
+    
 
-    typedef ImageCaptureBase::ImageRequest ImageRequest;
-    typedef ImageCaptureBase::ImageResponse ImageResponse;
-    typedef ImageCaptureBase::ImageType ImageType;
-
-    // for car use
-    // CarRpcLibClient client;
-    MultirotorRpcLibClient client;
-
-    // get right, left and depth images. First two as png, second as float16.
-    std::vector<ImageRequest> request = {
-        //png format
-        ImageRequest("0", ImageType::Scene),
-        //uncompressed RGB array bytes
-        ImageRequest("1", ImageType::Scene, false, false),
-        //floating point uncompressed image  
-        ImageRequest("1", ImageType::DepthPlanar, true)
-    };
-
-    const std::vector<ImageResponse>& response = client.simGetImages(request);
-
-    std::cout << "Size of the vector: " << response.size() << std::endl;
 
     uav.Hover(action, 20);
+
+    MultirotorRpcLibClient client;
+    // Define the request for stereo images
+    std::vector<msr::airlib::ImageCaptureBase::ImageRequest> requests = {
+        msr::airlib::ImageCaptureBase::ImageRequest("StereoLeft", msr::airlib::ImageCaptureBase::ImageType::Scene, false, false),
+        msr::airlib::ImageCaptureBase::ImageRequest("StereoRight", msr::airlib::ImageCaptureBase::ImageType::Scene, false, false)
+    };
+
+    // Retrieve images
+    const std::vector<msr::airlib::ImageCaptureBase::ImageResponse>& responses = client.simGetImages(requests);
+
+    std::cout << "First image height: " << responses[0].height << std::endl;
+    std::cout << "First image width: " << responses[0].width << std::endl;
+
+    std::cout << "Second image height: " << responses[2].height << std::endl;
+    std::cout << "Second image width: " << responses[2].width << std::endl;
+
+    std::ofstream file("drone_data.txt");
+
+    //// Write drone state
+    ////file << "Drone State:" << std::endl;
+    ////file << "Position: " << state.kinematics_estimated.pose.position << std::endl;
+    ////file << "Velocity: " << state.kinematics_estimated.twist.linear << std::endl;
+
+    // Write image data (example for one image)
+    if (!responses.empty()) {
+        file << "Image Data (First Image):" << std::endl;
+        for (size_t i = 0; i < responses[0].image_data_uint8.size(); ++i) {
+            file << (int)responses[0].image_data_uint8[i] << " ";
+            if ((i + 1) % responses[0].width == 0) file << std::endl; // New line for each row of the image
+        }
+    }
+
+    file.close();
 
     uav.Land(action, telemetry);
 
