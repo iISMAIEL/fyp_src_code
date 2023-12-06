@@ -21,7 +21,8 @@ STRICT_MODE_ON
 #include <mavsdk/mavsdk.h>
 #include <mavsdk/plugins/action/action.h>
 #include <mavsdk/plugins/telemetry/telemetry.h>
-#include <mavsdk/plugins/manual_control/manual_control.h>
+#include <mavsdk/plugins/offboard/offboard.h>
+#include <mavsdk/plugins/calibration/calibration.h>
 #include <iostream>
 #include <future>
 #include <memory>
@@ -43,7 +44,14 @@ using std::this_thread::sleep_for;
 using namespace msr::airlib;
 
 
+static std::function<void(Calibration::Result, Calibration::ProgressData)>
+create_calibration_callback(std::promise<void>&);
 
+static void calibrate_accelerometer(Calibration&);
+
+static void calibrate_gyro(Calibration&);
+
+static void calibrate_magnetometer(Calibration&);
 
 
 
@@ -64,15 +72,17 @@ public:
 
     bool TakeOff(mavsdk::Action &action);
 
-    double RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& telemetry*/);
+    double RewardFunction(MultirotorRpcLibClient &client);
 
-    void TheMasterpiece(mavsdk::Action& action, mavsdk::ManualControl& manual_control);
+    void TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard, mavsdk::Telemetry& telemetry);
 
     bool Hover(mavsdk::Action &action, int time);
 
     bool Land(mavsdk::Action &action, mavsdk::Telemetry &telemetry);
 
     bool DisArm(mavsdk::Action &action);
+
+    
     
 protected:
 
@@ -85,6 +95,10 @@ protected:
     double obstacle_mean_ = 0.0;
 
     bool reached_the_target_loc_ = false;
+
+    bool drone_status_ = false;
+
+    double previousDistanceToTarget_ = 1000.0;
 
 };
 

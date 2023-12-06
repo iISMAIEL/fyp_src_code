@@ -118,8 +118,8 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
-      <AdditionalLibraryDirectories>D:\Applications\AirSim\AirLib\lib\x64\Release;C:\Users\ismai\Projects\fyp_drl_algorithm\fyp_algo\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>mavsdk.lib;AirLib.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>D:\Applications\AirSim\AirLib\deps\rpclib\lib\x64\Release;D:\Applications\AirSim\AirLib\lib\x64\Release;C:\Users\ismai\Projects\fyp_drl_algorithm\fyp_algo\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>mavsdk.lib;AirLib.lib;rpc.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <MinimumRequiredVersion>
       </MinimumRequiredVersion>
     </Link>

@@ -48,7 +48,7 @@ std::shared_ptr<System> UAV::GetSystem(Mavsdk &mavsdk)
 bool UAV::TelemetrySettings(mavsdk::Telemetry &telemetry)
 {
     // We want to listen to the altitude of the drone at 1 Hz.
-    const auto set_rate_result = telemetry.set_rate_position(1.0);
+    const auto set_rate_result = telemetry.set_rate_position(0.1);
     if (set_rate_result != Telemetry::Result::Success) {
         std::cerr << "Setting rate failed: " << set_rate_result << '\n';
         return false;
@@ -57,6 +57,8 @@ bool UAV::TelemetrySettings(mavsdk::Telemetry &telemetry)
     // Set up callback to monitor altitude while the vehicle is in flight
     telemetry.subscribe_position([](Telemetry::Position position) {
         std::cout << "Altitude: " << position.relative_altitude_m << " m\n";
+        std::cout << "latitude: " << position.latitude_deg << " degree\n";
+        std::cout << "longitude: " << position.longitude_deg << " degree\n";
         });
 
     // Check until vehicle is ready to arm
@@ -109,23 +111,25 @@ double UAV::RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& 
         return collisionPenalty; // Huge penalty for crashing
     }
     
-    ////double currentPosition_x = telemetry.raw_gps().latitude_deg;
-    //double currentPosition_x = client.getMultirotorState().getPosition().x();
-    ////double currentPosition_y = telemetry.raw_gps().longitude_deg;
-    //double currentPosition_y = client.getMultirotorState().getPosition().y();
-    ////double currentPosition_z = telemetry.raw_gps().absolute_altitude_m;
-    //double currentPosition_z = client.getMultirotorState().getPosition().z();
-    //double distanceToTarget = sqrt((this->target_location_x_ - currentPosition_x) * (this->target_location_x_ - currentPosition_x)
-    //                               + (this->target_location_y_ - currentPosition_y) * (this->target_location_y_ - currentPosition_y)
-    //                                   + (this->target_location_z_ - currentPosition_z) * (this->target_location_z_ - currentPosition_z));
+    //double currentPosition_x = telemetry.raw_gps().latitude_deg;
+    double currentPosition_x = client.getMultirotorState().getPosition().x();
+    //double currentPosition_y = telemetry.raw_gps().longitude_deg;
+    double currentPosition_y = client.getMultirotorState().getPosition().y();
+    //double currentPosition_z = telemetry.raw_gps().absolute_altitude_m;
+    double currentPosition_z = client.getMultirotorState().getPosition().z();
 
-    //// Reward for getting closer to the target
+
+    double distanceToTarget = sqrt((this->target_location_x_ - currentPosition_x) * (this->target_location_x_ - currentPosition_x)
+                                   + (this->target_location_y_ - currentPosition_y) * (this->target_location_y_ - currentPosition_y)
+                                       + (this->target_location_z_ - currentPosition_z) * (this->target_location_z_ - currentPosition_z));
+
+    // Reward for getting closer to the target
     //static double previousDistanceToTarget = distanceToTarget; // Keep track of the previous distance
-    //if (distanceToTarget < previousDistanceToTarget) {
-    //    reward += (previousDistanceToTarget - distanceToTarget) * targetDistanceRewardFactor;
-    //    if (distanceToTarget < target_dist_threshold) { this->reached_the_target_loc_ = true; }
-    //}
-    //previousDistanceToTarget = distanceToTarget;
+    if (distanceToTarget < this->previousDistanceToTarget_) {
+        reward += (this->previousDistanceToTarget_ - distanceToTarget) * targetDistanceRewardFactor;
+        if (distanceToTarget < target_dist_threshold) { this->reached_the_target_loc_ = true; }
+    }
+    this->previousDistanceToTarget_ = distanceToTarget;
 
 
 
@@ -157,12 +161,13 @@ arma::mat ResizeImage(const arma::mat& original, int newHeight, int newWidth) {
     return resized;
 }
 
-void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::ManualControl& manual_control)
+void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  mavsdk::Telemetry& telemetry)
 {
-    this->target_location_x_ = 30;
-    this->target_location_y_ = 30;
-    this->target_location_z_ = 30;
+    this->target_location_x_ = 100;
+    this->target_location_y_ = 100;
+    this->target_location_z_ = 5;
 
+    this->reached_the_target_loc_ = false;
 
     // Airsim client
     MultirotorRpcLibClient client;
@@ -177,48 +182,13 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::ManualControl& manual_c
         msr::airlib::ImageCaptureBase::ImageRequest("StereoRight", msr::airlib::ImageCaptureBase::ImageType::DepthPerspective, true)
     };
 
-    //// Retrieve one image to and save it to a text file
-    //const std::vector<msr::airlib::ImageCaptureBase::ImageResponse>& responses = client.simGetImages(requests);
-
-
-    //std::cout << "First image: " << responses[0].image_data_float.size() << std::endl;
-
-    //// Check if we received any response
-    //if (responses.empty()) {
-    //    std::cout << "No image data received." << std::endl;
-    //    exit;
-    //}
-    //const ImageCaptureBase::ImageResponse& response = responses[0];
-
-    //// Convert raw image data to an Armadillo matrix
-    //arma::mat originalImage(response.height, response.width);
-    //for (int r = 0; r < response.height; ++r) {
-    //    for (int c = 0; c < response.width; ++c) {
-    //        originalImage(r, c) = static_cast<double>(response.image_data_float[r * response.width + c]);
-    //    }
-    //}
 
     //// Resize the image
-    int newHeight = 72;  //  new height
-    int newWidth = 128;  //  new width
-    //arma::mat resizedImage = ResizeImage(originalImage, newHeight, newWidth);
-
-    //resizedImage /= 255.0;
-
-    //std::ofstream file("drone_data.txt");
-
-    //if (!responses.empty()) {
-    //    for (size_t i = 0; i < resizedImage.size(); ++i) {
-    //        file << (float)resizedImage[i] << std::endl;
-    //    }
-    //}
-
-    //file.close();
+    int newHeight = 40;  //  new height
+    int newWidth = 40;  //  new width
+    
 
     const size_t inputSize = newHeight * newWidth;
-
-
-    
 
     FFN<EmptyLoss, GaussianInitialization>
         policyNetwork(EmptyLoss(), GaussianInitialization(0, 0.1));
@@ -236,22 +206,22 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::ManualControl& manual_c
         qNetwork(EmptyLoss(), GaussianInitialization(0, 0.1));
     qNetwork.Add(new Linear(inputSize));
     qNetwork.Add(new ReLU());
-    policyNetwork.Add(new Linear(512));
+    qNetwork.Add(new Linear(512));
     qNetwork.Add(new ReLU());
     qNetwork.Add(new Linear(1));
 
    
     // SAC hyperparameters and configuration
     TrainingConfig config;
-    config.StepSize() = 0.01;
-    config.TargetNetworkSyncInterval() = 1;
-    config.UpdateInterval() = 3;
+    config.StepSize() = 0.005;
+    config.TargetNetworkSyncInterval() = 5;
+    config.UpdateInterval() = 5;
     config.Rho() = 0.001;
 
 
-    const double discountFactor = 0.99;
+    const double discountFactor = 0.87;
 
-    constexpr size_t StateDimension = 72 * 128; // 9216 for a 72x128 image
+    constexpr size_t StateDimension = 40 * 40; // 9216 for a 72x128 image
     constexpr size_t ActionDimension = 4; // Pitch, roll, yaw, and throttle
     constexpr size_t RewardDimension = 1; // Single scalar value for reward
 
@@ -259,7 +229,7 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::ManualControl& manual_c
 
 
     // Replay buffer method (using a simple random replay)
-    RandomReplay<UAVEnv> replayMethod(10000, 64);
+    RandomReplay<UAVEnv> replayMethod(1000, 10);
     
 
     // Set up the SAC agent
@@ -270,167 +240,149 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::ManualControl& manual_c
 
     
 
-    std::vector<double> returnList;
-    size_t episodes = 0;
+        
 
+    bool collision = false;
+    TTimePoint collision_tp = 0;
+    if (client.simGetCollisionInfo().has_collided) {
+        std::cout << "False collision detected before takeoff. Ignoring..." << std::endl;
+        //::cout << "Reset.." << std::endl;
+        //client.reset();
+        collision_tp =  client.simGetCollisionInfo().time_stamp;
+        sleep_for(seconds(4));
+        //return; // Ignore false collisions before takeoff
+    }
+        
+    arma::mat current_flattenedImage;
+    current_flattenedImage.set_size(inputSize);
+    current_flattenedImage.fill(100);
+    current_flattenedImage = arma::vectorise(current_flattenedImage);
+
+        
+
+    // Send it once before starting offboard, otherwise it will be rejected.
+    Offboard::VelocityBodyYawspeed stay{};
+    offboard.set_velocity_body(stay);
+
+    Offboard::Result offboard_result = offboard.start();
+    if (offboard_result != Offboard::Result::Success) {
+        std::cerr << "Offboard start failed: " << offboard_result << '\n';
+    }
+    std::cout << "Offboard started\n";
+
+    size_t updateInterval = 5; // Define an interval for updates
+    size_t stepCounter = 0;
+
+
+    Pose home_pos = client.simGetVehiclePose();
+
+
+    std::cout << "System is ready\n";
+
+
+    // while loop that terminates once the drone crashes
     while (true) {
 
-        // return the drone to home position
-        for (unsigned i = 0; i << 10; ++i) {
-            manual_control.set_manual_control_input(0.f, 0.f, 0.5f, 0.f);
+        std::cout << "Training in process" << std::endl;
+        // Get action for current state
+        const std::vector<msr::airlib::ImageCaptureBase::ImageResponse>& responses = client.simGetImages(requests);
+
+        if (responses.empty()) {
+            std::cout << "No image data received." << std::endl;
+            continue;
+        }
+        const ImageCaptureBase::ImageResponse& response = responses[0];
+            
+        // Convert raw image data to an Armadillo matrix
+        arma::mat originalImage(response.height, response.width);
+        for (int r = 0; r < response.height; ++r) {
+            for (int c = 0; c < response.width; ++c) {
+                originalImage(r, c) = static_cast<double>(response.image_data_float[r * response.width + c]);
+            }
         }
 
-        auto action_result = action.arm();
-        if (action_result != Action::Result::Success) {
-            std::cerr << "Arming failed: " << action_result << '\n';
-            // close the while loop
-        }
+        arma::mat resizedImage = ResizeImage(originalImage, newHeight, newWidth);
+        resizedImage /= 255.0;
+        arma::mat new_flattenedImage = arma::vectorise(resizedImage);
 
-        action.takeoff();
+            
+        /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+        /*  Execute an action and get the reward   */        
+        /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 
-        for (unsigned i = 0; i << 10; ++i) {
-            manual_control.set_manual_control_input(0.f, 0.f, 0.5f, 0.f);
-        }
 
-        //auto manual_control_result = manual_control.start_position_control();
-        //if (manual_control_result != ManualControl::Result::Success) {
-        //    std::cerr << "Position control start failed: " << manual_control_result << '\n';
-        //    // close the while loop
-        //}
+        UAVEnv::State currentState(current_flattenedImage);
+        UAVEnv::State nextState(new_flattenedImage);
+
+        // Predict the action using the current state
+        arma::colvec actionVec;
+        policyNetwork.Predict(currentState.Encode(), actionVec);
+
+        UAVEnv::Action Action;
+        Action.action = arma::conv_to<std::vector<double>>::from(actionVec);
+            
+        float forward_m_s = actionVec[0] * 1;     /**< @brief Velocity forward (in metres/second) */
+        float right_m_s = actionVec[1] * 1;       /**< @brief Velocity right (in metres/second) */
+        float down_m_s = actionVec[2] * 1;        /**< @brief Velocity down (in metres/second) */
+        float yawspeed_deg_s = actionVec[3] * 60;  /**< @brief Yaw angular rate (in degrees/second, positive for
+                                                    clock-wise looking from above) */
+
+        offboard.set_velocity_body({ forward_m_s, right_m_s, down_m_s, yawspeed_deg_s });
+
+        sleep_for(seconds(2));
+        // Execute reward function
+        double reward = RewardFunction(client);
         
-        arma::mat current_flattenedImage;
-        current_flattenedImage.set_size(inputSize);
-        current_flattenedImage.fill(100);
-        current_flattenedImage = arma::vectorise(current_flattenedImage);
+        collision = client.simGetCollisionInfo().time_stamp != collision_tp;
+        //// Check for end of episode and update parameters
+        {
+            bool done = collision || this->reached_the_target_loc_;
 
-        sleep_for(seconds(8));
-        // while loop that terminates once the drone crashes
-        while (!(this->reached_the_target_loc_)) {
-            std::cout << "Training in process" << std::endl;
-            // Get action for current state
-            const std::vector<msr::airlib::ImageCaptureBase::ImageResponse>& responses = client.simGetImages(requests);
-
-            if (responses.empty()) {
-                std::cout << "No image data received." << std::endl;
-                continue;
-            }
-            const ImageCaptureBase::ImageResponse& response = responses[0];
-            
-            // Convert raw image data to an Armadillo matrix
-            arma::mat originalImage(response.height, response.width);
-            for (int r = 0; r < response.height; ++r) {
-                for (int c = 0; c < response.width; ++c) {
-                    originalImage(r, c) = static_cast<double>(response.image_data_float[r * response.width + c]);
-                }
-            }
-
-            arma::mat resizedImage = ResizeImage(originalImage, newHeight, newWidth);
-            resizedImage /= 255.0;
-            arma::mat new_flattenedImage = arma::vectorise(resizedImage);
-
-            
-            /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-            /*  Execute an action and get the reward   */        
-            /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-
-            UAVEnv::State currentState(current_flattenedImage);
-            UAVEnv::State nextState(new_flattenedImage);
-
-            // Predict the action using the current state
-            arma::colvec actionVec;
-            policyNetwork.Predict(currentState.Encode(), actionVec);
-
-            UAVEnv::Action action;
-            action.action = arma::conv_to<std::vector<double>>::from(actionVec);
-
-            const float pitch = actionVec[0];
-            std::cout << "pitch: " << pitch << std::endl;
-            const float roll = actionVec[1];
-            std::cout << "roll: " << roll << std::endl;
-            float throttle = actionVec[2];
-            throttle = sqrt(throttle * throttle);
-            std::cout << "throttle: " << throttle << std::endl;
-            const float yaw = actionVec[3];
-            std::cout << "yaw: " << yaw << std::endl;
-
-            //manual_control.start_position_control();
-            
-                
-            manual_control.set_manual_control_input(pitch, roll, throttle, yaw);
-                
-            
-            
-
-            sleep_for(seconds(5));
-            // Execute reward function
-            //double reward = RewardFunction(client);
-
-
-            double reward = 10.0;
-
-            // Constants for reward calculation
-            const double collisionPenalty = -100.0; // Penalty for crashing
-            const double targetDistanceRewardFactor = 10.0; // Reward for moving towards the target
-            const double obstaclePenaltyFactor = -5.0; // Penalty for getting too close to an obstacle
-
-            double safeDistanceThreshold = 10;
-
-            double target_dist_threshold = 7;
-
-            // Collision
-            
-
-            //double currentPosition_x = telemetry.raw_gps().latitude_deg;
-            double currentPosition_x = client.getMultirotorState().getPosition().x();
-            //double currentPosition_y = telemetry.raw_gps().longitude_deg;
-            double currentPosition_y = client.getMultirotorState().getPosition().y();
-            //double currentPosition_z = telemetry.raw_gps().absolute_altitude_m;
-            double currentPosition_z = client.getMultirotorState().getPosition().z();
-            double distanceToTarget = sqrt((this->target_location_x_ - currentPosition_x) * (this->target_location_x_ - currentPosition_x)
-                                           + (this->target_location_y_ - currentPosition_y) * (this->target_location_y_ - currentPosition_y)
-                                               + (this->target_location_z_ - currentPosition_z) * (this->target_location_z_ - currentPosition_z));
-
-            // Reward for getting closer to the target
-            static double previousDistanceToTarget = distanceToTarget; // Keep track of the previous distance
-            if (distanceToTarget < previousDistanceToTarget) {
-                reward += (previousDistanceToTarget - distanceToTarget) * targetDistanceRewardFactor;
-                if (distanceToTarget < target_dist_threshold) { this->reached_the_target_loc_ = true; }
-            }
-            previousDistanceToTarget = distanceToTarget;
-
-            if (client.simGetCollisionInfo().has_collided) {
-                reward = collisionPenalty; // Huge penalty for crashing
-
-            }
-
-            // Check for end of episode
-            bool done = client.simGetCollisionInfo().has_collided || this->reached_the_target_loc_;
-
-            // Store experience in the replay buffer
-            replayMethod.Store(currentState, action, reward, nextState, done, discountFactor);
+            //// Store experience in the replay buffer
+            replayMethod.Store(currentState, Action, reward, nextState, done, discountFactor);
 
             // Perform SAC update
-            agent.Update();
+            stepCounter++;
+            if (stepCounter % updateInterval == 0 || done) {
+                try {
+                    std::cout << "updating parameters..." << std::endl;
+                    agent.SoftUpdate(0.001);
+                }
+                catch (const std::exception& e) {
+                    std::cerr << "Exception during agent update: " << e.what() << std::endl;
+                }
+
+            }             
 
             if (done) {
+
+                std::cout << "collision detected in the alg" << std::endl;
+
+                std::cout << "Reset.." << std::endl;
+
+                // Stop the drone
+                //action.return_to_launch();
+                //action.land();  // Make sure the drone is landed before resetting
+                //while (telemetry.in_air()) {
+                //    // Wait until the drone is confirmed to be on the ground
+                //    std::this_thread::sleep_for(std::chrono::seconds(1));
+                //}
+                action.kill();
+                sleep_for(seconds(20));
+                client.reset();
+                sleep_for(seconds(5));
                 break;
             }
-
-            // Update the current state for the next iteration
-            current_flattenedImage = new_flattenedImage;   
-
         }
-        // Reset for the next episode...
+        // Update the current state for the next iteration
+        current_flattenedImage = new_flattenedImage;   
+    }
 
-        std::cout << "Reset.." << std::endl;
-        client.reset();
-        action.terminate();
-        action.reboot();
-        
-        this->reached_the_target_loc_ = false;
-
-        sleep_for(seconds(5));
-    }    
+    if (this->reached_the_target_loc_) {
+        std::cout << " WOOHOO  Reached the destination safely!" << std::endl;
+        char any_val = ' ';
+        std::cin >> any_val;
+    }      
 }
 
 bool UAV::Hover(mavsdk::Action &action, int time)
@@ -463,52 +415,139 @@ bool UAV::DisArm(mavsdk::Action &action)
 {
     // We are relying on auto-disarming but let's keep watching the telemetry for a bit longer.
     sleep_for(seconds(3));
+    action.disarm();
     std::cout << "Finished...\n";
-
-    action.shutdown();
     return true;
 }
 
-
-
-
-
+void runScript() {
+    std::system("wsl /home/ismaiel/myscript.sh");
+}
 
 int main(int argc, char** argv) {
 
+    
     UAV uav;
 
-    Mavsdk mavsdk;
+    while (true) {
 
-    uav.connect(mavsdk);
+        auto future = std::async(std::launch::async, []() {
+            return std::system("wsl /home/ismaiel/myscript.sh");
+            });
 
-    auto system = uav.GetSystem(mavsdk);
-    if (!system) {
-        return false;
+        //std::thread scriptThread(runScript);
+        sleep_for(seconds(30));
+    
+        Mavsdk mavsdk;
+
+        uav.connect(mavsdk);
+
+        auto system = uav.GetSystem(mavsdk);
+        if (!system) {
+            return false;
+        }
+
+        mavsdk::Telemetry telemetry = Telemetry{ system };
+
+        mavsdk::Action action = Action{ system };
+
+        mavsdk::Offboard offboard = Offboard{ system };
+
+        auto calibration = Calibration(system);
+
+        uav.TelemetrySettings(telemetry);
+
+    
+
+        uav.Arm(action);
+
+        uav.TakeOff(action);
+
+        uav.TheMasterpiece(action, offboard, telemetry);
+
+        ///*if (uav.reached_the_target_loc_) {
+
+        //    uav.Hover(action, 5);
+
+        //    uav.Land(action, telemetry);
+
+        //    uav.DisArm(action);
+
+        //    break;
+
+        //}*/
+        //std::cout << "in the main loop" << std::endl;
+
+        //// Run calibrations
+        //calibrate_accelerometer(calibration);
+        //calibrate_gyro(calibration);
+        //calibrate_magnetometer(calibration);
+
+        std::system("wsl /home/ismaiel/kill_px4.sh ");
     }
-     
-    mavsdk::Telemetry telemetry = Telemetry{ system };
-
-    uav.TelemetrySettings(telemetry);
-
-    mavsdk::Action action = Action{ system };
-
-    //uav.Arm(action);
-
-    //uav.TakeOff(action);
-
-    mavsdk::ManualControl manual_control = ManualControl{ system };
-
-    uav.TheMasterpiece(action, manual_control);
-
-    //uav.Hover(action, 20);
-
-    //uav.Land(action, telemetry);
-
-    uav.DisArm(action);
-
-    mavsdk.~Mavsdk();
 
     return 0;
 
+}
+
+void calibrate_accelerometer(Calibration& calibration)
+{
+    std::cout << "Calibrating accelerometer...\n";
+
+    std::promise<void> calibration_promise;
+    auto calibration_future = calibration_promise.get_future();
+
+    calibration.calibrate_accelerometer_async(create_calibration_callback(calibration_promise));
+
+    calibration_future.wait();
+}
+
+std::function<void(Calibration::Result, Calibration::ProgressData)>
+create_calibration_callback(std::promise<void>& calibration_promise)
+{
+    return [&calibration_promise](
+        const Calibration::Result result, const Calibration::ProgressData progress_data) {
+            switch (result) {
+            case Calibration::Result::Success:
+                std::cout << "--- Calibration succeeded!\n";
+                calibration_promise.set_value();
+                break;
+            case Calibration::Result::Next:
+                if (progress_data.has_progress) {
+                    std::cout << "    Progress: " << progress_data.progress << '\n';
+                }
+                if (progress_data.has_status_text) {
+                    std::cout << "    Instruction: " << progress_data.status_text << '\n';
+                }
+                break;
+            default:
+                std::cout << "--- Calibration failed with message: " << result << '\n';
+                calibration_promise.set_value();
+                break;
+            }
+        };
+}
+
+void calibrate_gyro(Calibration& calibration)
+{
+    std::cout << "Calibrating gyro...\n";
+
+    std::promise<void> calibration_promise;
+    auto calibration_future = calibration_promise.get_future();
+
+    calibration.calibrate_gyro_async(create_calibration_callback(calibration_promise));
+
+    calibration_future.wait();
+}
+
+void calibrate_magnetometer(Calibration& calibration)
+{
+    std::cout << "Calibrating magnetometer...\n";
+
+    std::promise<void> calibration_promise;
+    auto calibration_future = calibration_promise.get_future();
+
+    calibration.calibrate_magnetometer_async(create_calibration_callback(calibration_promise));
+
+    calibration_future.wait();
 }
