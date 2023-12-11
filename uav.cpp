@@ -90,24 +90,26 @@ bool UAV::TakeOff(mavsdk::Action &action)
         std::cerr << "Takeoff failed: " << takeoff_result << '\n';
         return false;
     }
+
+    sleep_for(seconds(10));
     return true;
 }
 
-double UAV::RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& telemetry*/)
+double UAV::RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& telemetry*/, double min_dist)
 {
     double reward = 0.0;
 
     // Constants for reward calculation
-    const double collisionPenalty = -100.0; // Penalty for crashing
+    const double collisionPenalty = -100.0;         // Penalty for crashing
     const double targetDistanceRewardFactor = 10.0; // Reward for moving towards the target
-    const double obstaclePenaltyFactor = -5.0; // Penalty for getting too close to an obstacle
+    const double obstaclePenaltyFactor = -10.0;     // Penalty for getting too close to an obstacle
 
-    double safeDistanceThreshold = 10;
+    double safeDistanceThreshold = 30;
 
     double target_dist_threshold = 7;
 
     // Collision
-    if (client.simGetCollisionInfo().collision_count > 0) {
+    if (this->drone_status_) {
         return collisionPenalty; // Huge penalty for crashing
     }
     
@@ -123,28 +125,26 @@ double UAV::RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& 
                                    + (this->target_location_y_ - currentPosition_y) * (this->target_location_y_ - currentPosition_y)
                                        + (this->target_location_z_ - currentPosition_z) * (this->target_location_z_ - currentPosition_z));
 
-    // Reward for getting closer to the target
-    //static double previousDistanceToTarget = distanceToTarget; // Keep track of the previous distance
+    /* Reward for getting closer to the target*/
     if (distanceToTarget < this->previousDistanceToTarget_) {
         reward += (this->previousDistanceToTarget_ - distanceToTarget) * targetDistanceRewardFactor;
+        if (client.getMultirotorState().getPosition().z() > 10) { reward -= 200; }
         if (distanceToTarget < target_dist_threshold) { this->reached_the_target_loc_ = true; }
     }
     this->previousDistanceToTarget_ = distanceToTarget;
 
 
+    /* '0' indicating very close objects and '255' representing objects that are far away or the absence of obstacles */
+    // Check for proximity to obstacles
+    if (min_dist < safeDistanceThreshold) {
+        reward += (safeDistanceThreshold - min_dist) * obstaclePenaltyFactor;
+    }
 
-    // Check for proximity to obstacles (if you have obstacle detection implemented)
-    //double distanceToNearestObstacle = this->obstacle_mean_; // Implement this function
-    //if (distanceToNearestObstacle < safeDistanceThreshold) { // Define a safe distance threshold
-    //    reward += (safeDistanceThreshold - distanceToNearestObstacle) * obstaclePenaltyFactor;
-    //}
-
-    // Additional rewards or penalties can be added here based on other criteria
 
     return reward;
 }
 
-// Function to perform nearest neighbor resizing
+
 arma::mat ResizeImage(const arma::mat& original, int newHeight, int newWidth) {
     arma::mat resized(newHeight, newWidth);
     double rowScale = static_cast<double>(original.n_rows) / newHeight;
@@ -163,52 +163,87 @@ arma::mat ResizeImage(const arma::mat& original, int newHeight, int newWidth) {
 
 void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  mavsdk::Telemetry& telemetry)
 {
-    this->target_location_x_ = 100;
-    this->target_location_y_ = 100;
-    this->target_location_z_ = 5;
+    this->target_location_x_ = 460;
+    this->target_location_y_ = 556;
+    this->target_location_z_ = 10;
 
     this->reached_the_target_loc_ = false;
+    this->drone_status_ = false;
 
     // Airsim client
     MultirotorRpcLibClient client;
-
-    // Define the request for stereo images
-    std::vector<msr::airlib::ImageCaptureBase::ImageRequest> requests = {
+    
+    // Define the request for stereo images and define the output size after pre-processing
+    std::vector<msr::airlib::ImageCaptureBase::ImageRequest> requests{
         // RGB images
         //msr::airlib::ImageCaptureBase::ImageRequest("StereoLeft", msr::airlib::ImageCaptureBase::ImageType::Scene, false, false),
-        //msr::airlib::ImageCaptureBase::ImageRequest("StereoRight", msr::airlib::ImageCaptureBase::ImageType::Scene, false, false),
+        msr::airlib::ImageCaptureBase::ImageRequest("StereoRight", msr::airlib::ImageCaptureBase::ImageType::Scene, false, false),
         // Depth images
         //msr::airlib::ImageCaptureBase::ImageRequest("StereoLeft", msr::airlib::ImageCaptureBase::ImageType::DepthPlanar, true),
         msr::airlib::ImageCaptureBase::ImageRequest("StereoRight", msr::airlib::ImageCaptureBase::ImageType::DepthPerspective, true)
     };
 
+    int new_height = 40;
+    int new_width = 40;
+    int depth = 4;
 
-    //// Resize the image
-    int newHeight = 40;  //  new height
-    int newWidth = 40;  //  new width
+    
+    // Policy Network
+    FFN<NegativeLogLikelihood, GaussianInitialization> cnn;
+
     
 
-    const size_t inputSize = newHeight * newWidth;
+    // First Convolution Layer
+    cnn.Add<Convolution>(16, 5, 5, 1, 1, 0, 0); // 4 input channels, 24 filters of 5x5
+    cnn.Add<LeakyReLU>();
+    // Output = 36 x 36 @ 16
 
-    FFN<EmptyLoss, GaussianInitialization>
-        policyNetwork(EmptyLoss(), GaussianInitialization(0, 0.1));
-    policyNetwork.Add(new Linear(inputSize));
-    policyNetwork.Add(new ReLU());
-    policyNetwork.Add(new Linear(512));
-    policyNetwork.Add(new ReLU());
-    policyNetwork.Add(new Linear(256));
-    policyNetwork.Add(new ReLU());
-    policyNetwork.Add(new Linear(4));
-    policyNetwork.Add(new TanH());
+    // Second Convolution Layer
+    cnn.Add<Convolution>(8, 3, 3, 2, 2, 2, 2); // 16 filters of 5x5 with stride of 2
+    cnn.Add<LeakyReLU>();
+    // Output = 15 x 15 @ 8
+
+    // Third Convolution Layer
+    cnn.Add<Convolution>(8, 3, 3, 2, 2, 0, 0); // 16 filters of 5x5 with stride of 2
+    cnn.Add<LeakyReLU>();
+    // Output = 4 x 4 @ 8
+
+    // Flatten the output
+    cnn.Add<Linear>(256);
+
+    cnn.InputDimensions() = { (unsigned long long)new_height  , (unsigned long long)new_width  , (unsigned long long)depth };
+
+    // Training parameters.
+    const size_t maxIterations = 100;  // Max number of iterations for training
+    const double learningRate = 0.01;  // Learning rate
+
+    // Set up the optimizer.
+    ens::Adam optimizer(learningRate, 50, 0.9, 0.999, 1e-8, maxIterations, 1e-8, true);
+
+    // Policy Network
+    FFN<MeanSquaredError, GaussianInitialization> policyNetwork
+        (MeanSquaredError(), GaussianInitialization(0, 0.1));
+
+    // Second Convolution Layer
+    policyNetwork.Add<Linear>(256); // 16 filters of 5x5 with stride of 2
+    policyNetwork.Add<ReLU>();
+
+    policyNetwork.Add<Linear>(3);
+    policyNetwork.Add<TanH>();
+
+    
 
     // Set up Critic network.
-    FFN<EmptyLoss, GaussianInitialization>
-        qNetwork(EmptyLoss(), GaussianInitialization(0, 0.1));
-    qNetwork.Add(new Linear(inputSize));
-    qNetwork.Add(new ReLU());
-    qNetwork.Add(new Linear(512));
-    qNetwork.Add(new ReLU());
-    qNetwork.Add(new Linear(1));
+    FFN<MeanSquaredError, GaussianInitialization>
+        qNetwork(MeanSquaredError(), GaussianInitialization(0, 0.1));
+
+    
+    qNetwork.Add<Linear>(256); // 16 filters of 5x5 with stride of 2
+    qNetwork.Add<ReLU>();
+
+    qNetwork.Add<Linear>(1);
+
+
 
    
     // SAC hyperparameters and configuration
@@ -216,13 +251,15 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     config.StepSize() = 0.005;
     config.TargetNetworkSyncInterval() = 5;
     config.UpdateInterval() = 5;
-    config.Rho() = 0.001;
+    config.Rho() = 0.01;
 
 
     const double discountFactor = 0.87;
 
-    constexpr size_t StateDimension = 40 * 40; // 9216 for a 72x128 image
-    constexpr size_t ActionDimension = 4; // Pitch, roll, yaw, and throttle
+    //constexpr size_t Rows = 40;
+    //constexpr size_t Cols = 40;
+    constexpr size_t StateDimension = 256; // 9216 for a 72x128 image
+    constexpr size_t ActionDimension = 3; // Pitch, roll, yaw, and throttle
     constexpr size_t RewardDimension = 1; // Single scalar value for reward
 
     using UAVEnv = ContinuousActionEnv<StateDimension, ActionDimension, RewardDimension>;
@@ -233,30 +270,38 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     
 
     // Set up the SAC agent
-    SAC<UAVEnv, decltype(qNetwork), decltype(policyNetwork), AdamUpdate> agent(
+    try {
+
+        SAC<UAVEnv, decltype(qNetwork), decltype(policyNetwork), AdamUpdate>* agent = new SAC<UAVEnv, decltype(qNetwork), decltype(policyNetwork), AdamUpdate>(
+            config, qNetwork, policyNetwork, replayMethod
+        );
+
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Exception caught while building the model: " << e.what() << std::endl;
+        // Additional error handling...
+    }
+
+    SAC<UAVEnv, decltype(qNetwork), decltype(policyNetwork), AdamUpdate>* agent = new SAC<UAVEnv, decltype(qNetwork), decltype(policyNetwork), AdamUpdate>(
         config, qNetwork, policyNetwork, replayMethod
     );
-
-
-    
-
         
 
     bool collision = false;
     TTimePoint collision_tp = 0;
     if (client.simGetCollisionInfo().has_collided) {
         std::cout << "False collision detected before takeoff. Ignoring..." << std::endl;
-        //::cout << "Reset.." << std::endl;
-        //client.reset();
         collision_tp =  client.simGetCollisionInfo().time_stamp;
-        sleep_for(seconds(4));
-        //return; // Ignore false collisions before takeoff
     }
         
-    arma::mat current_flattenedImage;
-    current_flattenedImage.set_size(inputSize);
-    current_flattenedImage.fill(100);
-    current_flattenedImage = arma::vectorise(current_flattenedImage);
+    arma::mat input_st;
+    input_st.set_size(256);
+    input_st.fill(0);
+
+
+    arma::mat output;
+    output.set_size(256);
+    output.fill(0);
 
         
 
@@ -270,13 +315,13 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     }
     std::cout << "Offboard started\n";
 
-    size_t updateInterval = 5; // Define an interval for updates
+    size_t updateInterval = 5;      // an interval for updates
     size_t stepCounter = 0;
 
 
     Pose home_pos = client.simGetVehiclePose();
 
-
+    
     std::cout << "System is ready\n";
 
 
@@ -286,33 +331,71 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
         std::cout << "Training in process" << std::endl;
         // Get action for current state
         const std::vector<msr::airlib::ImageCaptureBase::ImageResponse>& responses = client.simGetImages(requests);
-
+        std::cout << "Size of responses: " << responses.size() << std::endl;
         if (responses.empty()) {
             std::cout << "No image data received." << std::endl;
             continue;
         }
-        const ImageCaptureBase::ImageResponse& response = responses[0];
-            
-        // Convert raw image data to an Armadillo matrix
-        arma::mat originalImage(response.height, response.width);
-        for (int r = 0; r < response.height; ++r) {
-            for (int c = 0; c < response.width; ++c) {
-                originalImage(r, c) = static_cast<double>(response.image_data_float[r * response.width + c]);
+        //const ImageCaptureBase::ImageResponse& response = responses[0];
+
+       /* const auto& responses = client.simGetImages(requests);
+
+        if (responses.size() < 2) {
+            std::cout << "Insufficient image data received." << std::endl;
+            return -1;
+        }*/
+
+        // Convert RGB and depth image data to Armadillo matrices
+        arma::mat rgbImage(responses[0].height, responses[0].width * 3);  //  RGB image
+        arma::mat depthImage(responses[1].height, responses[1].width);    //  depth image
+
+        // Fill the matrices
+        // RGB image
+        for (int r = 0; r < responses[0].height; ++r) {
+            for (int c = 0; c < responses[0].width; ++c) {
+                for (int channel = 0; channel < 3; ++channel) {
+                    rgbImage(r, c * 3 + channel) = static_cast<double>(responses[0].image_data_uint8[r * responses[0].width * 3 + c * 3 + channel]);
+                }
             }
         }
 
-        arma::mat resizedImage = ResizeImage(originalImage, newHeight, newWidth);
-        resizedImage /= 255.0;
-        arma::mat new_flattenedImage = arma::vectorise(resizedImage);
+        // Depth image
+        for (int r = 0; r < responses[1].height; ++r) {
+            for (int c = 0; c < responses[1].width; ++c) {
+                depthImage(r, c) = static_cast<double>(responses[1].image_data_float[r * responses[1].width + c]);
+            }
+        }
 
-            
+        // Resize the images 
+        arma::mat resizedRgb = ResizeImage(rgbImage, new_height, new_width * 3);  // Resize RGB
+        arma::mat resizedDepth = ResizeImage(depthImage, new_height, new_width);   // Resize depth
+
+        // Normalize the RGB image
+        resizedRgb /= 255.0;
+        resizedDepth /= 255.0;
+
+        // Flatten and concatenate the channels
+        int totalElements = new_height * new_width * depth; // 40x40x4
+        arma::mat combinedImage(totalElements, 1); // One column for one image
+
+        // Interleaving RGB and depth channels
+        for (int i = 0; i < new_height * new_width; ++i) {
+            combinedImage(i, 0) = resizedRgb(i / new_width, (i % new_width) * 3);     // R
+            combinedImage(i + new_height * new_width, 0) = resizedRgb(i / new_width, (i % new_width) * 3 + 1); // G
+            combinedImage(i + 2 * new_height * new_width, 0) = resizedRgb(i / new_width, (i % new_width) * 3 + 2); // B
+            combinedImage(i + 3 * new_height * new_width, 0) = resizedDepth(i / new_width, i % new_width);         // Depth
+        }
+
+
         /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
         /*  Execute an action and get the reward   */        
         /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+        std::cout << "combined image: " << combinedImage.size() << std::endl;
+        
+        cnn.Predict(combinedImage, output);
 
-
-        UAVEnv::State currentState(current_flattenedImage);
-        UAVEnv::State nextState(new_flattenedImage);
+        UAVEnv::State currentState(input_st);
+        UAVEnv::State nextState(output);
 
         // Predict the action using the current state
         arma::colvec actionVec;
@@ -323,17 +406,21 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
             
         float forward_m_s = actionVec[0] * 1;     /**< @brief Velocity forward (in metres/second) */
         float right_m_s = actionVec[1] * 1;       /**< @brief Velocity right (in metres/second) */
-        float down_m_s = actionVec[2] * 1;        /**< @brief Velocity down (in metres/second) */
-        float yawspeed_deg_s = actionVec[3] * 60;  /**< @brief Yaw angular rate (in degrees/second, positive for
+        float down_m_s = 0;// actionVec[2] * 0.001;        /**< @brief Velocity down (in metres/second) */
+        float yawspeed_deg_s = actionVec[2] * 60;  /**< @brief Yaw angular rate (in degrees/second, positive for
                                                     clock-wise looking from above) */
 
         offboard.set_velocity_body({ forward_m_s, right_m_s, down_m_s, yawspeed_deg_s });
 
         sleep_for(seconds(2));
-        // Execute reward function
-        double reward = RewardFunction(client);
-        
+
         collision = client.simGetCollisionInfo().time_stamp != collision_tp;
+        this->drone_status_ = collision;
+
+        // Execute reward function
+        double reward = RewardFunction(client, output.min());
+        
+        
         //// Check for end of episode and update parameters
         {
             bool done = collision || this->reached_the_target_loc_;
@@ -346,7 +433,7 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
             if (stepCounter % updateInterval == 0 || done) {
                 try {
                     std::cout << "updating parameters..." << std::endl;
-                    agent.SoftUpdate(0.001);
+                    agent->SoftUpdate(0.01);
                 }
                 catch (const std::exception& e) {
                     std::cerr << "Exception during agent update: " << e.what() << std::endl;
@@ -360,13 +447,6 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
 
                 std::cout << "Reset.." << std::endl;
 
-                // Stop the drone
-                //action.return_to_launch();
-                //action.land();  // Make sure the drone is landed before resetting
-                //while (telemetry.in_air()) {
-                //    // Wait until the drone is confirmed to be on the ground
-                //    std::this_thread::sleep_for(std::chrono::seconds(1));
-                //}
                 action.kill();
                 sleep_for(seconds(20));
                 client.reset();
@@ -375,7 +455,7 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
             }
         }
         // Update the current state for the next iteration
-        current_flattenedImage = new_flattenedImage;   
+        input_st = output;
     }
 
     if (this->reached_the_target_loc_) {
@@ -420,6 +500,11 @@ bool UAV::DisArm(mavsdk::Action &action)
     return true;
 }
 
+bool UAV::ReachedTheTarget()
+{
+    return this->reached_the_target_loc_;
+}
+
 void runScript() {
     std::system("wsl /home/ismaiel/myscript.sh");
 }
@@ -435,7 +520,6 @@ int main(int argc, char** argv) {
             return std::system("wsl /home/ismaiel/myscript.sh");
             });
 
-        //std::thread scriptThread(runScript);
         sleep_for(seconds(30));
     
         Mavsdk mavsdk;
@@ -453,7 +537,7 @@ int main(int argc, char** argv) {
 
         mavsdk::Offboard offboard = Offboard{ system };
 
-        auto calibration = Calibration(system);
+        auto param = Param{ system };
 
         uav.TelemetrySettings(telemetry);
 
@@ -465,89 +549,24 @@ int main(int argc, char** argv) {
 
         uav.TheMasterpiece(action, offboard, telemetry);
 
-        ///*if (uav.reached_the_target_loc_) {
+        if (uav.ReachedTheTarget()) {
 
-        //    uav.Hover(action, 5);
+            uav.Hover(action, 5);
 
-        //    uav.Land(action, telemetry);
+            uav.Land(action, telemetry);
 
-        //    uav.DisArm(action);
+            uav.DisArm(action);
 
-        //    break;
+            std::cout << "Mission completed! will repeat in 30 seconds..." << std::endl;
 
-        //}*/
+            break;
+
+        }
         //std::cout << "in the main loop" << std::endl;
-
-        //// Run calibrations
-        //calibrate_accelerometer(calibration);
-        //calibrate_gyro(calibration);
-        //calibrate_magnetometer(calibration);
 
         std::system("wsl /home/ismaiel/kill_px4.sh ");
     }
 
     return 0;
 
-}
-
-void calibrate_accelerometer(Calibration& calibration)
-{
-    std::cout << "Calibrating accelerometer...\n";
-
-    std::promise<void> calibration_promise;
-    auto calibration_future = calibration_promise.get_future();
-
-    calibration.calibrate_accelerometer_async(create_calibration_callback(calibration_promise));
-
-    calibration_future.wait();
-}
-
-std::function<void(Calibration::Result, Calibration::ProgressData)>
-create_calibration_callback(std::promise<void>& calibration_promise)
-{
-    return [&calibration_promise](
-        const Calibration::Result result, const Calibration::ProgressData progress_data) {
-            switch (result) {
-            case Calibration::Result::Success:
-                std::cout << "--- Calibration succeeded!\n";
-                calibration_promise.set_value();
-                break;
-            case Calibration::Result::Next:
-                if (progress_data.has_progress) {
-                    std::cout << "    Progress: " << progress_data.progress << '\n';
-                }
-                if (progress_data.has_status_text) {
-                    std::cout << "    Instruction: " << progress_data.status_text << '\n';
-                }
-                break;
-            default:
-                std::cout << "--- Calibration failed with message: " << result << '\n';
-                calibration_promise.set_value();
-                break;
-            }
-        };
-}
-
-void calibrate_gyro(Calibration& calibration)
-{
-    std::cout << "Calibrating gyro...\n";
-
-    std::promise<void> calibration_promise;
-    auto calibration_future = calibration_promise.get_future();
-
-    calibration.calibrate_gyro_async(create_calibration_callback(calibration_promise));
-
-    calibration_future.wait();
-}
-
-void calibrate_magnetometer(Calibration& calibration)
-{
-    std::cout << "Calibrating magnetometer...\n";
-
-    std::promise<void> calibration_promise;
-    auto calibration_future = calibration_promise.get_future();
-
-    calibration.calibrate_magnetometer_async(create_calibration_callback(calibration_promise));
-
-    calibration_future.wait();
 }

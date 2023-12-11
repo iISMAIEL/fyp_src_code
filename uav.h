@@ -22,7 +22,7 @@ STRICT_MODE_ON
 #include <mavsdk/plugins/action/action.h>
 #include <mavsdk/plugins/telemetry/telemetry.h>
 #include <mavsdk/plugins/offboard/offboard.h>
-#include <mavsdk/plugins/calibration/calibration.h>
+#include <mavsdk/plugins/param/param.h>
 #include <iostream>
 #include <future>
 #include <memory>
@@ -44,15 +44,6 @@ using std::this_thread::sleep_for;
 using namespace msr::airlib;
 
 
-static std::function<void(Calibration::Result, Calibration::ProgressData)>
-create_calibration_callback(std::promise<void>&);
-
-static void calibrate_accelerometer(Calibration&);
-
-static void calibrate_gyro(Calibration&);
-
-static void calibrate_magnetometer(Calibration&);
-
 
 
 class UAV
@@ -72,7 +63,7 @@ public:
 
     bool TakeOff(mavsdk::Action &action);
 
-    double RewardFunction(MultirotorRpcLibClient &client);
+    double RewardFunction(MultirotorRpcLibClient &client, double min_dist);
 
     void TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard, mavsdk::Telemetry& telemetry);
 
@@ -82,6 +73,7 @@ public:
 
     bool DisArm(mavsdk::Action &action);
 
+    bool ReachedTheTarget();
     
     
 protected:
