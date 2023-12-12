@@ -101,7 +101,7 @@ double UAV::RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& 
 
     // Constants for reward calculation
     const double collisionPenalty = -100.0;         // Penalty for crashing
-    const double targetDistanceRewardFactor = 10.0; // Reward for moving towards the target
+    const double targetDistanceRewardFactor = 40.0; // Reward for moving towards the target
     const double obstaclePenaltyFactor = -10.0;     // Penalty for getting too close to an obstacle
 
     double safeDistanceThreshold = 30;
@@ -125,10 +125,11 @@ double UAV::RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& 
                                    + (this->target_location_y_ - currentPosition_y) * (this->target_location_y_ - currentPosition_y)
                                        + (this->target_location_z_ - currentPosition_z) * (this->target_location_z_ - currentPosition_z));
 
+    std::cout << "Distance to destination: " << distanceToTarget << " m" << std::endl;
+
     /* Reward for getting closer to the target*/
     if (distanceToTarget < this->previousDistanceToTarget_) {
         reward += (this->previousDistanceToTarget_ - distanceToTarget) * targetDistanceRewardFactor;
-        if (client.getMultirotorState().getPosition().z() > 10) { reward -= 200; }
         if (distanceToTarget < target_dist_threshold) { this->reached_the_target_loc_ = true; }
     }
     this->previousDistanceToTarget_ = distanceToTarget;
@@ -141,6 +142,7 @@ double UAV::RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& 
     }
 
 
+    std::cout << "Reward: " << reward << std::endl;
     return reward;
 }
 
@@ -161,11 +163,12 @@ arma::mat ResizeImage(const arma::mat& original, int newHeight, int newWidth) {
     return resized;
 }
 
+
 void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  mavsdk::Telemetry& telemetry)
 {
-    this->target_location_x_ = 460;
-    this->target_location_y_ = 556;
-    this->target_location_z_ = 10;
+    this->target_location_x_ = -1168.9823;
+    this->target_location_y_ = -9738.552734;
+    this->target_location_z_ = -116.541504;
 
     this->reached_the_target_loc_ = false;
     this->drone_status_ = false;
@@ -187,31 +190,34 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     int new_width = 40;
     int depth = 4;
 
-    
+ 
     // Policy Network
-    FFN<NegativeLogLikelihood, GaussianInitialization> cnn;
+    FFN<MeanSquaredError, HeInitialization> cnn;
 
-    
-
+  
     // First Convolution Layer
-    cnn.Add<Convolution>(16, 5, 5, 1, 1, 0, 0); // 4 input channels, 24 filters of 5x5
+    cnn.Add<Convolution>(64, 7, 7, 2, 2, 0, 0); // 4 input channels, 24 filters of 5x5
     cnn.Add<LeakyReLU>();
     // Output = 36 x 36 @ 16
 
     // Second Convolution Layer
-    cnn.Add<Convolution>(8, 3, 3, 2, 2, 2, 2); // 16 filters of 5x5 with stride of 2
+    cnn.Add<Convolution>(32, 5, 5, 2, 2, 0, 0); // 16 filters of 5x5 with stride of 2
     cnn.Add<LeakyReLU>();
     // Output = 15 x 15 @ 8
 
     // Third Convolution Layer
-    cnn.Add<Convolution>(8, 3, 3, 2, 2, 0, 0); // 16 filters of 5x5 with stride of 2
+    cnn.Add<Convolution>(32, 5, 5, 2, 2, 2, 2); // 16 filters of 5x5 with stride of 2
     cnn.Add<LeakyReLU>();
     // Output = 4 x 4 @ 8
+
+    // Softmax
+    cnn.Add<Softmax>(); 
 
     // Flatten the output
     cnn.Add<Linear>(256);
 
     cnn.InputDimensions() = { (unsigned long long)new_height  , (unsigned long long)new_width  , (unsigned long long)depth };
+    
 
     // Training parameters.
     const size_t maxIterations = 100;  // Max number of iterations for training
@@ -221,8 +227,8 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     ens::Adam optimizer(learningRate, 50, 0.9, 0.999, 1e-8, maxIterations, 1e-8, true);
 
     // Policy Network
-    FFN<MeanSquaredError, GaussianInitialization> policyNetwork
-        (MeanSquaredError(), GaussianInitialization(0, 0.1));
+    FFN<EmptyLoss, GaussianInitialization> policyNetwork
+        (EmptyLoss(), GaussianInitialization(0, 0.1));
 
     // Second Convolution Layer
     policyNetwork.Add<Linear>(256); // 16 filters of 5x5 with stride of 2
@@ -234,58 +240,54 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     
 
     // Set up Critic network.
-    FFN<MeanSquaredError, GaussianInitialization>
-        qNetwork(MeanSquaredError(), GaussianInitialization(0, 0.1));
+    FFN<EmptyLoss, GaussianInitialization>
+        qNetwork(EmptyLoss(), GaussianInitialization(0, 0.1));
 
     
     qNetwork.Add<Linear>(256); // 16 filters of 5x5 with stride of 2
     qNetwork.Add<ReLU>();
 
+
+    qNetwork.Add<Linear>(256); // 16 filters of 5x5 with stride of 2
+    qNetwork.Add<ReLU>();
+
     qNetwork.Add<Linear>(1);
-
-
 
    
     // SAC hyperparameters and configuration
     TrainingConfig config;
-    config.StepSize() = 0.005;
-    config.TargetNetworkSyncInterval() = 5;
-    config.UpdateInterval() = 5;
-    config.Rho() = 0.01;
+    config.TargetNetworkSyncInterval() = 1;
+    config.UpdateInterval() = 1;
 
 
     const double discountFactor = 0.87;
 
-    //constexpr size_t Rows = 40;
-    //constexpr size_t Cols = 40;
     constexpr size_t StateDimension = 256; // 9216 for a 72x128 image
     constexpr size_t ActionDimension = 3; // Pitch, roll, yaw, and throttle
-    constexpr size_t RewardDimension = 1; // Single scalar value for reward
 
-    using UAVEnv = ContinuousActionEnv<StateDimension, ActionDimension, RewardDimension>;
-
+    using UAVEnv = ContinuousActionEnv<StateDimension, ActionDimension>;
 
     // Replay buffer method (using a simple random replay)
-    RandomReplay<UAVEnv> replayMethod(1000, 10);
+    RandomReplay<UAVEnv> replayMethod(256, 100000);
     
-
     // Set up the SAC agent
-    try {
+    //try {
 
-        SAC<UAVEnv, decltype(qNetwork), decltype(policyNetwork), AdamUpdate>* agent = new SAC<UAVEnv, decltype(qNetwork), decltype(policyNetwork), AdamUpdate>(
-            config, qNetwork, policyNetwork, replayMethod
-        );
+    //    SAC<UAVEnv, decltype(qNetwork), decltype(policyNetwork), AdamUpdate>* agent = new SAC<UAVEnv, decltype(qNetwork), decltype(policyNetwork), AdamUpdate>(
+    //        config, qNetwork, policyNetwork, replayMethod
+    //    );
 
-    }
-    catch (const std::exception& e) {
-        std::cerr << "Exception caught while building the model: " << e.what() << std::endl;
-        // Additional error handling...
-    }
+    //}
+    //catch (const std::exception& e) {
+    //    std::cerr << "Exception caught while building the model: " << e.what() << std::endl;
+    //    // Additional error handling...
+    //}
 
-    SAC<UAVEnv, decltype(qNetwork), decltype(policyNetwork), AdamUpdate>* agent = new SAC<UAVEnv, decltype(qNetwork), decltype(policyNetwork), AdamUpdate>(
+    SAC<UAVEnv, decltype(qNetwork), decltype(policyNetwork), AdamUpdate> agent(
         config, qNetwork, policyNetwork, replayMethod
     );
         
+    agent.Deterministic() = false;
 
     bool collision = false;
     TTimePoint collision_tp = 0;
@@ -303,6 +305,14 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     output.set_size(256);
     output.fill(0);
 
+    arma::mat q_net_output;
+    q_net_output.set_size(257);
+    q_net_output.fill(0);
+
+    arma::mat q_net_input;
+    q_net_input.set_size(256);
+    q_net_input.fill(0);
+
         
 
     // Send it once before starting offboard, otherwise it will be rejected.
@@ -315,154 +325,196 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     }
     std::cout << "Offboard started\n";
 
-    size_t updateInterval = 5;      // an interval for updates
-    size_t stepCounter = 0;
+    // Initializing training variables.
+    std::vector<double> returnList;
+    size_t episodes = 0;
+    bool converged = true;
 
-
-    Pose home_pos = client.simGetVehiclePose();
-
-    
+    // The number of episode returns to keep track of.
+    size_t consecutiveEpisodes = 25;
+    const size_t numSteps = 20000;
+  
     std::cout << "System is ready\n";
-
-
     // while loop that terminates once the drone crashes
-    while (true) {
+    while (agent.TotalSteps() < numSteps) {
+        double episodeReturn = 0;
 
-        std::cout << "Training in process" << std::endl;
-        // Get action for current state
-        const std::vector<msr::airlib::ImageCaptureBase::ImageResponse>& responses = client.simGetImages(requests);
-        std::cout << "Size of responses: " << responses.size() << std::endl;
-        if (responses.empty()) {
-            std::cout << "No image data received." << std::endl;
-            continue;
-        }
-        //const ImageCaptureBase::ImageResponse& response = responses[0];
+        bool done = false;
+        do {
+            std::cout << "Training in process" << std::endl;
+            // Get image for current state
+            const std::vector<msr::airlib::ImageCaptureBase::ImageResponse>& responses = client.simGetImages(requests);
+            if (responses.empty()) {
+                std::cout << "No image data received." << std::endl;
+                continue;
+            }
 
-       /* const auto& responses = client.simGetImages(requests);
 
-        if (responses.size() < 2) {
-            std::cout << "Insufficient image data received." << std::endl;
-            return -1;
-        }*/
+            // Convert RGB and depth image data to Armadillo matrices
+            arma::mat rgbImage(responses[0].height, responses[0].width * 3);  //  RGB image
+            arma::mat depthImage(responses[1].height, responses[1].width);    //  depth image
 
-        // Convert RGB and depth image data to Armadillo matrices
-        arma::mat rgbImage(responses[0].height, responses[0].width * 3);  //  RGB image
-        arma::mat depthImage(responses[1].height, responses[1].width);    //  depth image
-
-        // Fill the matrices
-        // RGB image
-        for (int r = 0; r < responses[0].height; ++r) {
-            for (int c = 0; c < responses[0].width; ++c) {
-                for (int channel = 0; channel < 3; ++channel) {
-                    rgbImage(r, c * 3 + channel) = static_cast<double>(responses[0].image_data_uint8[r * responses[0].width * 3 + c * 3 + channel]);
+            // Fill the matrices
+            // RGB image
+            for (int r = 0; r < responses[0].height; ++r) {
+                for (int c = 0; c < responses[0].width; ++c) {
+                    for (int channel = 0; channel < 3; ++channel) {
+                        rgbImage(r, c * 3 + channel) = static_cast<double>(responses[0].image_data_uint8[r * responses[0].width * 3 + c * 3 + channel]);
+                    }
                 }
             }
-        }
 
-        // Depth image
-        for (int r = 0; r < responses[1].height; ++r) {
-            for (int c = 0; c < responses[1].width; ++c) {
-                depthImage(r, c) = static_cast<double>(responses[1].image_data_float[r * responses[1].width + c]);
+            // Depth image
+            for (int r = 0; r < responses[1].height; ++r) {
+                for (int c = 0; c < responses[1].width; ++c) {
+                    depthImage(r, c) = static_cast<double>(responses[1].image_data_float[r * responses[1].width + c]);
+                }
             }
-        }
 
-        // Resize the images 
-        arma::mat resizedRgb = ResizeImage(rgbImage, new_height, new_width * 3);  // Resize RGB
-        arma::mat resizedDepth = ResizeImage(depthImage, new_height, new_width);   // Resize depth
+            // Resize the images 
+            arma::mat resizedRgb = ResizeImage(rgbImage, new_height, new_width * 3);  // Resize RGB
+            arma::mat resizedDepth = ResizeImage(depthImage, new_height, new_width);   // Resize depth
 
-        // Normalize the RGB image
-        resizedRgb /= 255.0;
-        resizedDepth /= 255.0;
+            // Normalize the RGB image
+            resizedRgb /= 255.0;
+            resizedDepth /= 255.0;
 
-        // Flatten and concatenate the channels
-        int totalElements = new_height * new_width * depth; // 40x40x4
-        arma::mat combinedImage(totalElements, 1); // One column for one image
+            // Flatten and concatenate the channels
+            int totalElements = new_height * new_width * depth; // 40x40x4
+            arma::mat combinedImage(totalElements, 1); // One column for one image
 
-        // Interleaving RGB and depth channels
-        for (int i = 0; i < new_height * new_width; ++i) {
-            combinedImage(i, 0) = resizedRgb(i / new_width, (i % new_width) * 3);     // R
-            combinedImage(i + new_height * new_width, 0) = resizedRgb(i / new_width, (i % new_width) * 3 + 1); // G
-            combinedImage(i + 2 * new_height * new_width, 0) = resizedRgb(i / new_width, (i % new_width) * 3 + 2); // B
-            combinedImage(i + 3 * new_height * new_width, 0) = resizedDepth(i / new_width, i % new_width);         // Depth
-        }
+            // Interleaving RGB and depth channels
+            for (int i = 0; i < new_height * new_width; ++i) {
+                combinedImage(i, 0) = resizedRgb(i / new_width, (i % new_width) * 3);     // R
+                combinedImage(i + new_height * new_width, 0) = resizedRgb(i / new_width, (i % new_width) * 3 + 1); // G
+                combinedImage(i + 2 * new_height * new_width, 0) = resizedRgb(i / new_width, (i % new_width) * 3 + 2); // B
+                combinedImage(i + 3 * new_height * new_width, 0) = resizedDepth(i / new_width, i % new_width);         // Depth
+            }
 
 
-        /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-        /*  Execute an action and get the reward   */        
-        /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-        std::cout << "combined image: " << combinedImage.size() << std::endl;
-        
-        cnn.Predict(combinedImage, output);
+            /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+            /*  Execute an action and get the reward   */
+            /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 
-        UAVEnv::State currentState(input_st);
-        UAVEnv::State nextState(output);
 
-        // Predict the action using the current state
-        arma::colvec actionVec;
-        policyNetwork.Predict(currentState.Encode(), actionVec);
+            std::cout << "combined image: " << combinedImage.size() << std::endl;
 
-        UAVEnv::Action Action;
-        Action.action = arma::conv_to<std::vector<double>>::from(actionVec);
+            try {
+                cnn.Predict(combinedImage, output);
+            }
+            catch (const std::exception& e) {
+                std::cerr << "Exception during agent update: " << e.what() << std::endl;
+            }
             
-        float forward_m_s = actionVec[0] * 1;     /**< @brief Velocity forward (in metres/second) */
-        float right_m_s = actionVec[1] * 1;       /**< @brief Velocity right (in metres/second) */
-        float down_m_s = 0;// actionVec[2] * 0.001;        /**< @brief Velocity down (in metres/second) */
-        float yawspeed_deg_s = actionVec[2] * 60;  /**< @brief Yaw angular rate (in degrees/second, positive for
-                                                    clock-wise looking from above) */
 
-        offboard.set_velocity_body({ forward_m_s, right_m_s, down_m_s, yawspeed_deg_s });
 
-        sleep_for(seconds(2));
+            UAVEnv::State currentState(input_st);
 
-        collision = client.simGetCollisionInfo().time_stamp != collision_tp;
-        this->drone_status_ = collision;
 
-        // Execute reward function
-        double reward = RewardFunction(client, output.min());
-        
-        
-        //// Check for end of episode and update parameters
-        {
-            bool done = collision || this->reached_the_target_loc_;
+            agent.State().Data() = input_st;
+
+            // Predict the action using the current state
+
+            agent.SelectAction();
+
+            float forward_m_s = { float(agent.Action().action[0]) * 1 };     /**< @brief Velocity forward (in metres/second) */
+            float right_m_s = { float(agent.Action().action[1]) * 1 };       /**< @brief Velocity right (in metres/second) */
+            float down_m_s = 0;// actionVec[2] * 0.001;        /**< @brief Velocity down (in metres/second) */
+            float yawspeed_deg_s = { float(agent.Action().action[2]) * 30 };  /**< @brief Yaw angular rate (in degrees/second, positive for
+                                                        clock-wise looking from above) */
+
+            offboard.set_velocity_body({ forward_m_s, right_m_s, down_m_s, yawspeed_deg_s });
+
+            sleep_for(seconds(2));
+
+            collision = client.simGetCollisionInfo().time_stamp != collision_tp;
+            this->drone_status_ = collision;
+
+            UAVEnv::State nextState(output);
+            nextState.Data() = output;
+
+            // Execute reward function
+            double reward = RewardFunction(client, output.min());
+
+
+            //// Check for end of episode and update parameters
+
+            done = collision || this->reached_the_target_loc_;
 
             //// Store experience in the replay buffer
-            replayMethod.Store(currentState, Action, reward, nextState, done, discountFactor);
-
+            replayMethod.Store(agent.State(), agent.Action(), reward, nextState, done, discountFactor);
+            episodeReturn += reward;
+            agent.TotalSteps()++;
             // Perform SAC update
-            stepCounter++;
-            if (stepCounter % updateInterval == 0 || done) {
-                try {
-                    std::cout << "updating parameters..." << std::endl;
-                    agent->SoftUpdate(0.01);
-                }
-                catch (const std::exception& e) {
-                    std::cerr << "Exception during agent update: " << e.what() << std::endl;
-                }
+            std::cout << "check point no 1 " << std::endl;
 
-            }             
-
-            if (done) {
-
-                std::cout << "collision detected in the alg" << std::endl;
-
-                std::cout << "Reset.." << std::endl;
-
-                action.kill();
-                sleep_for(seconds(20));
-                client.reset();
-                sleep_for(seconds(5));
-                break;
+            if (agent.TotalSteps() < config.ExplorationSteps())
+            {
+                continue;
             }
-        }
-        // Update the current state for the next iteration
-        input_st = output;
-    }
 
-    if (this->reached_the_target_loc_) {
-        std::cout << " WOOHOO  Reached the destination safely!" << std::endl;
-        char any_val = ' ';
-        std::cin >> any_val;
-    }      
+
+            try {
+                for (size_t i = 0; i < config.UpdateInterval(); i++) agent.Update();
+            }
+            catch (const std::exception& e) {
+                std::cerr << "Exception during agent update: " << e.what() << std::endl;
+            }
+
+            std::cout << "after updating parameters..." << qNetwork.Network()[4]->Parameters().size() << std::endl;
+            sleep_for(seconds(3));
+            q_net_output = qNetwork.Network()[4]->Parameters();
+            std::cout << " size of q_net_input: " << q_net_output.size() << std::endl;
+            q_net_output.resize(256);
+            std::cout << " size of q_net_output: " << q_net_output.size() << std::endl;
+            cnn.Train(combinedImage, q_net_output);
+
+            input_st = output;
+
+        } while (!done);
+
+
+            /*try {
+            }
+            catch (const std::exception& e) {
+                std::cerr << "Exception during agent update: " << e.what() << std::endl;
+            }*/
+
+        if (collision) {
+            std::cout << "collision detected in the alg" << std::endl;
+            std::cout << "Reset.." << std::endl;
+            action.kill();
+            sleep_for(seconds(20));
+            client.reset();
+            sleep_for(seconds(5));
+            break;
+        }
+
+        if (this->reached_the_target_loc_) {
+            std::cout << " WOOHOO  Reached the destination safely!" << std::endl;
+            char any_val = ' ';
+            std::cin >> any_val;
+            break;
+        }
+        
+        returnList.push_back(episodeReturn);
+
+        episodes += 1;
+
+        if (returnList.size() > consecutiveEpisodes)
+            returnList.erase(returnList.begin());
+
+        double averageReturn =
+            std::accumulate(returnList.begin(), returnList.end(), 0.0)
+            / returnList.size();
+        if (episodes % 4 == 0)
+        {
+            std::cout << "Avg return in last " << returnList.size()
+                << " episodes: " << averageReturn
+                << "\\t Episode return: " << episodeReturn
+                << "\\t Total steps: " << agent.TotalSteps() << std::endl;
+        }
+    }          
 }
 
 bool UAV::Hover(mavsdk::Action &action, int time)

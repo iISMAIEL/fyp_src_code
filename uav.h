@@ -5,7 +5,7 @@
 // Define these to print extra informational output and warnings.
 #define MLPACK_PRINT_INFO
 #define MLPACK_PRINT_WARN
-
+//#define MLPACK_ENABLE_ANN_SERIALIZATION
 #include "common/common_utils/StrictMode.hpp"
 STRICT_MODE_OFF
 #ifndef RPCLIB_MSGPACK
@@ -13,6 +13,8 @@ STRICT_MODE_OFF
 #endif // !RPCLIB_MSGPACK
 #include "rpc/rpc_error.h"
 STRICT_MODE_ON
+
+
 
 #include <mlpack/mlpack.hpp>
 #include <vehicles/multirotor/api/MultirotorRpcLibClient.hpp>
