@@ -5,6 +5,8 @@
 // Define these to print extra informational output and warnings.
 #define MLPACK_PRINT_INFO
 #define MLPACK_PRINT_WARN
+
+#define MLPACK_ENABLE_ANN_SERIALIZATION
 //#define MLPACK_ENABLE_ANN_SERIALIZATION
 #include "common/common_utils/StrictMode.hpp"
 STRICT_MODE_OFF
@@ -13,7 +15,6 @@ STRICT_MODE_OFF
 #endif // !RPCLIB_MSGPACK
 #include "rpc/rpc_error.h"
 STRICT_MODE_ON
-
 
 
 #include <mlpack/mlpack.hpp>
@@ -92,7 +93,14 @@ protected:
 
     bool drone_status_ = false;
 
-    double previousDistanceToTarget_ = 1000.0;
+    double previousDistanceToTarget_ = 0;
+
+    size_t episodes = 0;
+
+    bool loadModel_ = true;
+    // Whether to save the trained model.
+    bool saveModel_ = true;
+
 
 };
 

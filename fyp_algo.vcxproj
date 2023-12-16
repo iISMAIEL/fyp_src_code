@@ -110,7 +110,7 @@
       <AdditionalIncludeDirectories>D:\Applications\AirSim\AirLib\deps\rpclib\include;C:\Users\ismai\Projects\fyp_drl_algorithm\fyp_algo\include;D:\Applications\AirSim\AirLib\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalModuleDependencies>
       </AdditionalModuleDependencies>
-      <AdditionalOptions>/Zc:__cplusplus</AdditionalOptions>
+      <AdditionalOptions>/Zc:__cplusplus /bigobj</AdditionalOptions>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <PreprocessorDefinitions>
