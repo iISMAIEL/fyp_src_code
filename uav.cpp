@@ -102,10 +102,10 @@ double UAV::RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& 
 {
     double reward = 0.0;
 
-    const double collisionPenalty = -100.0;         // Penalty for crashing
-    const double targetDistanceRewardFactor = 15;    // Reward for moving towards the target
-    const double obstaclePenaltyFactor = -1;        // Penalty for getting too close to an obstacle
-    double safeDistanceThreshold = 42.5;            // To calculate the penalty for getting too close to an obstacle
+    const double collisionPenalty = -10000.0;         // Penalty for crashing
+    const double targetDistanceRewardFactor = 25;    // Reward for moving towards the target
+    const double obstaclePenaltyFactor = -7.5;        // Penalty for getting too close to an obstacle
+    double safeDistanceThreshold = 190;            // To calculate the penalty for getting too close to an obstacle
     double target_dist_threshold = 5;               // Once the drone is 5 m from the target destination the mission will be considered completed.
 
 
@@ -119,14 +119,22 @@ double UAV::RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& 
 
     double total_squared = (dist_calc_x * dist_calc_x) + (dist_calc_y * dist_calc_y);
     double distanceToTarget = sqrt(total_squared);
+
+    double e_fun = exp(-(distanceToTarget / this->distance_to_target));
+
+    
     std::cout << "Distance to destination: " << distanceToTarget << "m" << std::endl;
+    std::cout << "distance_to_target (init): " << this->distance_to_target << "m" << std::endl;
 
     // First Reward (destination)
     /* Reward for getting closer to the target */
-    if (distanceToTarget < this->previousDistanceToTarget_) {
-        reward += (this->previousDistanceToTarget_ - distanceToTarget) * targetDistanceRewardFactor;
-        if (distanceToTarget < target_dist_threshold) { this->reached_the_target_loc_ = true; return 100.0; }
-    }
+    //if (distanceToTarget < this->previousDistanceToTarget_) {
+        //reward += (this->previousDistanceToTarget_ - distanceToTarget) * targetDistanceRewardFactor;
+    reward += tanh(e_fun) * 1000;
+
+    if (distanceToTarget < target_dist_threshold) { this->reached_the_target_loc_ = true; return 10000.0; }
+    //}
+    //else { reward += obstaclePenaltyFactor; }
     this->previousDistanceToTarget_ = distanceToTarget;
 
     // Second Reward (Collision)
@@ -140,10 +148,15 @@ double UAV::RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& 
 
     // Third Reward (Obstacles)
     // Check for proximity to obstacles
-    if (min_dist < safeDistanceThreshold) {
-        reward += (safeDistanceThreshold - min_dist) * obstaclePenaltyFactor;
+    min_dist -= 416;
+    if (min_dist > 100) {
+        min_dist = 100;
     }
+    reward += min_dist  * obstaclePenaltyFactor;
+
+
     std::cout << "min_dist: " << min_dist << std::endl;
+
  
     return reward;
 }
@@ -195,7 +208,7 @@ void SaveChannelToFile(const arma::mat& channelData, const std::string& fileName
 }
 
 // Save the avg-reward for each episode 
-void updateCSVFile(const std::string& filename, double episodeReward) {
+void updateCSVFile(const std::string& filename, double episodeReward, int num_of_steps, bool success) {
     std::fstream file;
     int episodeNumber = 1;
 
@@ -208,7 +221,7 @@ void updateCSVFile(const std::string& filename, double episodeReward) {
 
     // If file does not exist, write headers
     if (!fileExists) {
-        file << "Episode Number,Reward\n";
+        file << "Episode Number,Reward,Number of steps,Status\n";
     }
     else {
         // Read the last episode number if the file exists
@@ -230,8 +243,24 @@ void updateCSVFile(const std::string& filename, double episodeReward) {
     }
 
     // Write the new episode data
-    file << episodeNumber << "," << episodeReward << "\n";
+    file << episodeNumber << "," << episodeReward << "," << num_of_steps << "," << success << "\n";
     file.close();
+}
+
+// Function to normalize depth values between 0 and 255
+arma::mat normalizeDepthImage(const arma::mat& depthImage) {
+    arma::mat normalizedImage = depthImage;
+
+    // Normalize the depth values to a range of 0 to 1
+    double minVal = depthImage.min();
+    double maxVal = depthImage.max();
+    normalizedImage -= minVal;
+    normalizedImage /= (maxVal - minVal);
+
+    // Scale to 0 to 255
+    normalizedImage *= 255.0;
+
+    return normalizedImage;
 }
 
 // The main algorithm
@@ -244,6 +273,18 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     this->drone_status_ = false;
 
     MultirotorRpcLibClient client;
+    while (!client.ping()){
+        MultirotorRpcLibClient client;
+    }
+
+    double currentPosition_x = client.getMultirotorState().getPosition().x();
+    double currentPosition_y = client.getMultirotorState().getPosition().y();
+
+    double dist_calc_x = this->target_location_x_ - currentPosition_x;
+    double dist_calc_y = this->target_location_y_ - currentPosition_y;
+
+    double total_squared = (dist_calc_x * dist_calc_x) + (dist_calc_y * dist_calc_y);
+    this->distance_to_target = sqrt(total_squared);    
     
     // Define the request for stereo images and the output size after pre-processing
     std::vector<msr::airlib::ImageCaptureBase::ImageRequest> requests{
@@ -261,7 +302,7 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     int depth = 4;
 
     // CNN Network
-    FFN<MeanSquaredError, HeInitialization> cnn;
+    FFN < MeanSquaredError, RandomInitialization > cnn;
 
     if (this->loadModel_) {
         std::cout << "cnn: Loading model ..." << std::endl;
@@ -271,25 +312,27 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
 
 
         // First Convolution Layer
-        cnn.Add<Convolution>(32, 7, 7, 2, 2, 0, 0); // 4 input channels, 24 filters of 5x5
-        cnn.Add<LeakyReLU>();
+        cnn.Add<Convolution>(16, 5, 5, 2, 2, 0, 0); // 4 input channels, 24 filters of 5x5
+        cnn.Add<FTSwish>();
         // Output = 36 x 36 @ 16
 
         // Second Convolution Layer
-        cnn.Add<Convolution>(16, 5, 5, 2, 2, 0, 0); // 32 filters of 5x5 with stride of 2
-        cnn.Add<LeakyReLU>();
+        cnn.Add<Convolution>(8, 5, 5, 2, 2, 0, 0); // 32 filters of 5x5 with stride of 2
+        cnn.Add<FTSwish>();
         // Output = 15 x 15 @ 8
 
         // Third Convolution Layer
-        cnn.Add<Convolution>(16, 5, 5, 2, 2, 2, 2); // 16 filters of 5x5 with stride of 2
-        cnn.Add<LeakyReLU>();
+        cnn.Add<Convolution>(1, 5, 5, 2, 2, 2, 2); // 16 filters of 5x5 with stride of 2
+        cnn.Add<FTSwish>();
         // Output = 4 x 4 @ 8
+        // 
 
-        // Softmax
-        cnn.Add<Softmax>();
-
-        // output
         cnn.Add<Linear>(256);
+        cnn.Add<FTSwish>();
+
+        
+        
+        
 
         cnn.InputDimensions() = { (unsigned long long)new_height  , (unsigned long long)new_width  , (unsigned long long)depth };
 
@@ -298,7 +341,7 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
 
     // Policy Network
     FFN<EmptyLoss, GaussianInitialization> policyNetwork
-    (EmptyLoss(), GaussianInitialization(0, 0.1));
+    (EmptyLoss(), GaussianInitialization(0, 0.05));
 
     if (this->loadModel_) {
         std::cout << "policyNetwork: Loading model ..." << std::endl;
@@ -306,17 +349,25 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     }
     else
     {
-        policyNetwork.Add<Linear>(259);
-        policyNetwork.Add<ReLU>();
+        policyNetwork.Add<Linear>(258);
+        policyNetwork.Add<LeakyReLU>();
 
-        policyNetwork.Add<Linear>(3);
+        policyNetwork.Add<Linear>(256);
+        policyNetwork.Add<FTSwish>();
+
+        policyNetwork.Add<Linear>(64);
+        policyNetwork.Add<HardTanH>();
+
+        policyNetwork.Add<Linear>(12);
+        policyNetwork.Add<HardTanH>();
+
+        policyNetwork.Add<Linear>(2);
         policyNetwork.Add<TanH>();
-
     }
 
     // Critic network.
     FFN<EmptyLoss, GaussianInitialization>
-        qNetwork(EmptyLoss(), GaussianInitialization(0, 0.1));
+        qNetwork(EmptyLoss(), GaussianInitialization(0, 0.05));
 
     if (this->loadModel_) {
         std::cout << "qNetwork: Loading model ..." << std::endl;
@@ -324,11 +375,17 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     }
     else
     {
-        qNetwork.Add<Linear>(259);
-        qNetwork.Add<ReLU>();
+        qNetwork.Add<Linear>(258);
+        qNetwork.Add<LeakyReLU>();
 
         qNetwork.Add<Linear>(256);
-        qNetwork.Add<ReLU>();
+        qNetwork.Add<FTSwish>();
+
+        qNetwork.Add<Linear>(64);
+        qNetwork.Add<HardTanH>();
+
+        qNetwork.Add<Linear>(12);
+        qNetwork.Add<HardTanH>();
 
         qNetwork.Add<Linear>(1);
     }
@@ -336,19 +393,19 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
 
     // SAC hyperparameters and configuration
     TrainingConfig config;
-    config.StepSize() = 0.001;
+    config.StepSize() = 0.04;
     config.Discount() = 0.9;
-    config.TargetNetworkSyncInterval() = 4;
+    config.TargetNetworkSyncInterval() = 7;
     config.ExplorationSteps() = 1;                  
     config.DoubleQLearning() = false;
-    config.StepLimit() = 2000;
-    config.UpdateInterval() = 3;
-    config.Rho() = 0.7;
+    config.StepLimit() = 700;
+    config.UpdateInterval() = 5;
+    config.Rho() = 0.005;
     
     const double discountFactor = 0.99;
 
-    constexpr size_t StateDimension = 259; 
-    constexpr size_t ActionDimension = 3;   // Pitch, roll, yaw, and (without) throttle
+    constexpr size_t StateDimension = 258; 
+    constexpr size_t ActionDimension = 2;   
 
     using UAVEnv = ContinuousActionEnv<StateDimension, ActionDimension>;
 
@@ -361,7 +418,7 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     );
         
     agent.Deterministic() = false;
-
+    
     bool collision = false;
     TTimePoint collision_tp = 0;
     if (client.simGetCollisionInfo().has_collided) {
@@ -374,12 +431,11 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     input_st.fill(255);
     double any_x = 0;
     double any_y = 0;
-    double any_yaw = 0;
-    arma::vec temp_pr = { any_x, any_y, any_yaw };
+    arma::vec temp_pr = { any_x, any_y };
     input_st.insert_rows(input_st.n_rows, temp_pr);
 
     arma::mat output;
-    output.set_size(259);
+    output.set_size(256);
     output.fill(255);
 
     arma::mat q_net_output;
@@ -405,8 +461,10 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
 
     bool switchee = false;
 
-    do {
+    unsigned long long times = 0;
 
+    do {
+        auto start = std::chrono::high_resolution_clock::now();
         // Get image for current state
         const std::vector<msr::airlib::ImageCaptureBase::ImageResponse>& responses = client.simGetImages(requests);
         if (responses.empty()) {
@@ -436,9 +494,17 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
             }
         }
 
+        float maxThreshold = 7.0f;
+
+        // Apply the threshold
+        // Any value above 3 meters is set to 3 meters
+        depthImage = arma::clamp(depthImage, 0, maxThreshold);
+
         // Resize the images 
         arma::mat resizedRgb = ResizeImage(rgbImage, new_height, new_width * 3);  // Resize RGB
         arma::mat resizedDepth = ResizeImage(depthImage, new_height, new_width);   // Resize depth
+
+        //arma::mat normalizedDepth = normalizeDepthImage(resizedDepth);
 
         // Flatten and concatenate the channels
         int totalElements = new_height * new_width * depth; // 40x40x4
@@ -474,8 +540,7 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
         cnn.Predict(combinedImage, output);
         double pos_x = client.getMultirotorState().getPosition().x();
         double pos_y = client.getMultirotorState().getPosition().y();
-        double yaw_angular = client.getMultirotorState().kinematics_estimated.twist.angular.z() * 180 / M_PI;
-        arma::vec temp = { pos_x, pos_y, yaw_angular };
+        arma::vec temp = { pos_x, pos_y };
         output.insert_rows(output.n_rows, temp);
  
         UAVEnv::State currentState(input_st);
@@ -485,22 +550,36 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
         // Predict the action using the current state
         agent.SelectAction();
 
-        float forward_m_s = { abs(float(agent.Action().action[0]) * 0.65f) };     /**< @brief Velocity forward (in metres/second) */
-        float right_m_s = { float(agent.Action().action[1]) * 0.65f };       /**< @brief Velocity right (in metres/second) */
+        float forward_m_s = { abs(float(agent.Action().action[0]) * 0.35f) };     /**< @brief Velocity forward (in metres/second) */
+        float right_m_s = { float(agent.Action().action[1]) * 0.35f };       /**< @brief Velocity right (in metres/second) */
         float down_m_s = 0;// actionVec[2] * 0.001;        /**< @brief Velocity down (in metres/second) */
-        float yawspeed_deg_s = { float(agent.Action().action[2]) * 10 };  /**< @brief Yaw angular rate (in degrees/second, positive for
-                                                                            clock-wise looking from above) */
-        offboard.set_velocity_body({ forward_m_s, right_m_s, 0.0f, yawspeed_deg_s });
-
-        sleep_for(seconds(2));
+        float yawspeed_deg_s = 0;//{ float(agent.Action().action[2]) * 2.5f };  /**< @brief Yaw angular rate (in degrees/second, positive for
+                                                                            //clock-wise looking from above) */
+        offboard.set_velocity_body({ forward_m_s, right_m_s, 0.0f, 0.0f });
 
         collision = client.simGetCollisionInfo().time_stamp != collision_tp;
         this->drone_status_ = collision;
 
-        for (int i = 0; i < config.ExplorationSteps(); i++) { continue; }
+        if (agent.TotalSteps() < config.ExplorationSteps())
+        {
+            agent.TotalSteps()++;
+            continue;
+        }
+
+        double dangerZoneThreshold = 3;
+        // Count the number of pixels below the danger zone threshold
+        arma::uword count = arma::accu(resizedDepth < dangerZoneThreshold);
+        //double averageDistance = arma::mean(arma::mean(normalizedDepth));
+        // 
         // Reward function
-        double reward = RewardFunction(client, output.min());
+        double reward = RewardFunction(client, count);
+        if (agent.TotalSteps() > config.StepLimit()) {
+            reward = -100;
+            this->drone_status_ = true;
+        }
         std::cout << "Reward: " << reward << std::endl;
+
+        
 
         if (this->drone_status_) {
             std::cout << "Reset.." << std::endl;
@@ -514,56 +593,42 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
         UAVEnv::State nextState(output);
         nextState.Data() = output;
 
+        input_st = output;
+
+
+        // flag to end the episode
+        done = collision || this->reached_the_target_loc_ || (agent.TotalSteps() > config.StepLimit()) || this->drone_status_;
+
         
 
-        //// flag for end of episode
-        done = collision || this->reached_the_target_loc_;
-
-        //// Store experience in the replay buffer
-        replayMethod.Store(agent.State(), agent.Action(), reward, nextState, done, discountFactor);
+        // Store experience in the replay buffer
+        replayMethod.Store(agent.State().Encode(), agent.Action(), reward, nextState, done, discountFactor);
         episodeReturn += reward;
         agent.TotalSteps()++;
         returnList.push_back(episodeReturn);
-        // Perform SAC update
 
-        /*if (agent.TotalSteps() < config.ExplorationSteps())
-        {
-            continue;
-        }*/
 
         for (size_t i = 0; i < config.UpdateInterval(); i++) agent.Update();
-
-        sleep_for(seconds(3));
+        
 
         // Perform CNN update
-
         q_net_output = qNetwork.Network()[4]->Parameters();
         q_net_output.resize(256);
         cnn.Train(combinedImage, q_net_output);
 
-        input_st = output;
+        auto stop = std::chrono::high_resolution_clock::now();
+        times = std::chrono::duration_cast<std::chrono::microseconds>(stop - start).count();
+        std::cout << "Response time: "  << times << " microseconds" << std::endl;
+
+        //sleep_for(std::chrono::milliseconds(500));
 
     } while (!done);
 
     this->episodes += 1;
-
-    double averageReturn =
-        std::accumulate(returnList.begin(), returnList.end(), 0.0)
-        / returnList.size();
-
-    updateCSVFile("rewards.csv", averageReturn);
-
-    if (this->episodes % 4 == 0)
-    {
-        std::cout << "/~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~/\n\n";
-        std::cout << "\t\tAvg return in episode number: " << this->episodes
-            << " = " << averageReturn
-            << " and the Total steps: " << agent.TotalSteps() << std::endl;
-        std::cout << "\n\n/~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~/\n\n";
-    }
-
     if (this->reached_the_target_loc_) {
         std::cout << " WOOHOO  Reached the destination safely!" << std::endl;
+
+        this->success = true;
 
         this->Hover(action, 5);
 
@@ -583,8 +648,19 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
         std::system("wsl /home/ismaiel/kill_px4.sh ");
     }
 
-    
-    
+    double averageReturn =
+        std::accumulate(returnList.begin(), returnList.end(), 0.0) / (agent.TotalSteps());
+
+    updateCSVFile("rewards.csv", averageReturn, returnList.size(), this->success);
+
+    std::cout << "\n\n##########################\n\n";
+    std::cout << " Average return: " << averageReturn
+        << "\nTotal steps: " << agent.TotalSteps();
+    std::cout << "\n\n##########################\n\n";
+ 
+    this->success = false;
+    returnList.clear();
+
     data::Save("./saved_models/cnn.xml", "cnn", cnn, false, data::format::xml);
     std::cout << "Model saved in /saved_models/cnn.xml" << std::endl;
     
@@ -639,8 +715,6 @@ bool UAV::ReachedTheTarget()
 
 int main(int argc, char** argv) {
 
-    
-
     UAV uav;
     int num_of_episodes = 40;
     int counter_for_episodes = 0;
@@ -676,28 +750,11 @@ int main(int argc, char** argv) {
 
         uav.TelemetrySettings(telemetry);
 
-
         uav.Arm(action);
 
         uav.TakeOff(action);
 
         uav.TheMasterpiece(action, offboard, telemetry);
-
-        //if (uav.ReachedTheTarget()) {
-
-        //    uav.Hover(action, 5);
-
-        //    uav.Land(action, telemetry);
-
-        //    uav.DisArm(action);
-
-        //    std::cout << "Mission completed! will repeat in 30 seconds..." << std::endl;
-
-        //    sleep_for(seconds(30));
-
-        //}
-        ////std::cout << "in the main loop" << std::endl;
-
         
     }
 

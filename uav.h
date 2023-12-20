@@ -77,9 +77,13 @@ public:
     bool DisArm(mavsdk::Action &action);
 
     bool ReachedTheTarget();
+
+     
     
     
 protected:
+
+    double distance_to_target = 0.0;
 
     double target_location_x_ = 0.0;
 
@@ -100,6 +104,10 @@ protected:
     bool loadModel_ = true;
     // Whether to save the trained model.
     bool saveModel_ = true;
+
+    bool success = false;
+
+    int pre_no_of_pix_ = 0;
 
 
 };
