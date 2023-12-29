@@ -393,7 +393,7 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
 
     // SAC hyperparameters and configuration
     TrainingConfig config;
-    config.StepSize() = 0.04;
+    config.StepSize() = 0.04;                   // step size: (0.04) - 500 ep # - (0.08) - 500 ep #
     config.Discount() = 0.9;
     config.TargetNetworkSyncInterval() = 7;
     config.ExplorationSteps() = 1;                  
@@ -417,7 +417,7 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
         config, qNetwork, policyNetwork, replayMethod
     );
         
-    agent.Deterministic() = false;
+    agent.Deterministic() = true;
     
     bool collision = false;
     TTimePoint collision_tp = 0;
@@ -599,7 +599,7 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
         // flag to end the episode
         done = collision || this->reached_the_target_loc_ || (agent.TotalSteps() > config.StepLimit()) || this->drone_status_;
 
-        
+        /*
 
         // Store experience in the replay buffer
         replayMethod.Store(agent.State().Encode(), agent.Action(), reward, nextState, done, discountFactor);
@@ -616,14 +616,15 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
         q_net_output.resize(256);
         cnn.Train(combinedImage, q_net_output);
 
+        */
         auto stop = std::chrono::high_resolution_clock::now();
         times = std::chrono::duration_cast<std::chrono::microseconds>(stop - start).count();
         std::cout << "Response time: "  << times << " microseconds" << std::endl;
 
-        //sleep_for(std::chrono::milliseconds(500));
-
+        sleep_for(std::chrono::milliseconds(1000));
+        
     } while (!done);
-
+    
     this->episodes += 1;
     if (this->reached_the_target_loc_) {
         std::cout << " WOOHOO  Reached the destination safely!" << std::endl;
@@ -647,7 +648,7 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
         sleep_for(seconds(3));
         std::system("wsl /home/ismaiel/kill_px4.sh ");
     }
-
+    /*
     double averageReturn =
         std::accumulate(returnList.begin(), returnList.end(), 0.0) / (agent.TotalSteps());
 
@@ -669,7 +670,7 @@ void UAV::TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard,  ma
     
     data::Save("./saved_models/qNetwork.xml", "qNetwork", qNetwork, false, data::format::xml);
     std::cout << "Model saved in /saved_models/qNetwork.xml" << std::endl;
-    
+    */
 }
 
 bool UAV::Hover(mavsdk::Action &action, int time)
@@ -716,7 +717,7 @@ bool UAV::ReachedTheTarget()
 int main(int argc, char** argv) {
 
     UAV uav;
-    int num_of_episodes = 40;
+    int num_of_episodes = 1;
     int counter_for_episodes = 0;
 
     while (counter_for_episodes < num_of_episodes) {
