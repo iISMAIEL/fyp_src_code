@@ -32,7 +32,8 @@ STRICT_MODE_ON
 #include <thread>
 #include <fstream>
 #include <armadillo>
-
+#include <windows.h>
+#include <tlhelp32.h>
 
 using namespace mlpack;
 using namespace mlpack::ann;
@@ -56,9 +57,7 @@ public:
     
     UAV() {};
 
-    std::shared_ptr<System> GetSystem(Mavsdk &mavsdk) ;
-
-    bool connect(Mavsdk &mavsdk);
+    //bool connect(Mavsdk &mavsdk);
 
     bool TelemetrySettings(mavsdk::Telemetry &telemetry);
 
@@ -67,8 +66,6 @@ public:
     bool TakeOff(mavsdk::Action &action);
 
     double RewardFunction(MultirotorRpcLibClient &client, double min_dist);
-
-    void TheMasterpiece(mavsdk::Action& action, mavsdk::Offboard& offboard, mavsdk::Telemetry& telemetry);
 
     bool Hover(mavsdk::Action &action, int time);
 
@@ -81,7 +78,7 @@ public:
      
     
     
-protected:
+//protected:
 
     double distance_to_target = 0.0;
 
@@ -99,16 +96,11 @@ protected:
 
     double previousDistanceToTarget_ = 0;
 
-    size_t episodes = 0;
-
-    bool loadModel_ = true;
-    // Whether to save the trained model.
-    bool saveModel_ = true;
-
     bool success = false;
 
     int pre_no_of_pix_ = 0;
 
+   
 
 };
 
