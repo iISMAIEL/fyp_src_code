@@ -34,6 +34,8 @@ STRICT_MODE_ON
 #include <armadillo>
 #include <windows.h>
 #include <tlhelp32.h>
+#include <mutex>
+#include <condition_variable>
 
 using namespace mlpack;
 using namespace mlpack::ann;
