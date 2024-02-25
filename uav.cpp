@@ -59,8 +59,8 @@ double UAV::RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& 
 {
     double reward = 0.0;
 
-    const double collisionPenalty = -25000.0;         // Penalty for crashing
-    const double obstaclePenaltyFactor = -5;        // Penalty for getting too close to an obstacle
+    const double collisionPenalty = -100.0;         // Penalty for crashing
+    const double obstaclePenaltyFactor = -0.02;        // Penalty for getting too close to an obstacle
     double target_dist_threshold = 5;               // Once the drone is 5 m from the target destination the mission will be considered completed.
 
 
@@ -76,6 +76,7 @@ double UAV::RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& 
     double distanceToTarget = sqrt(total_squared);
 
     double e_fun = exp(-(distanceToTarget / this->distance_to_target));
+    double e_fun_pen = exp(-(1-(distanceToTarget / this->distance_to_target)));
 
 
     std::cout << "Distance to destination: " << distanceToTarget << "m" << std::endl;
@@ -83,8 +84,14 @@ double UAV::RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& 
 
     // First Reward (destination)
     /* Reward for getting closer to the target */
-    reward += tanh(e_fun) * 500;
-    if (distanceToTarget < target_dist_threshold) { this->reached_the_target_loc_ = true; return 25000.0; }
+    if (distanceToTarget < previousDistanceToTarget_) {
+        reward += tanh(e_fun) * 1;
+    }
+    else {
+        reward += tanh(e_fun_pen) * -1;
+    }
+    
+    if (distanceToTarget < target_dist_threshold) { this->reached_the_target_loc_ = true; return 100.0; }
     this->previousDistanceToTarget_ = distanceToTarget;
 
     // Second Reward (Collision)
@@ -98,16 +105,16 @@ double UAV::RewardFunction(MultirotorRpcLibClient &client/*, mavsdk::Telemetry& 
 
     // Third Reward (Obstacles)
     // Check for proximity to obstacles
-    min_dist -= 416;
-    if (min_dist > 100) {
-        min_dist = 100;
+    min_dist -= 60;
+    if (min_dist > 50) {
+        min_dist = 50;
     }
     reward += min_dist * obstaclePenaltyFactor;
 
 
     std::cout << "min_dist: " << min_dist << std::endl;
 
-
+    reward = tanh(reward);
     return reward;
 }
 
@@ -157,8 +164,8 @@ void SaveChannelToFile(const arma::mat& channelData, const std::string& fileName
     }
 }
 
-// Save the avg-reward for each episode 
-void updateCSVFile(const std::string& filename, double episodeReward, int num_of_steps, bool success) {
+// Save the avg-reward for each episode with mean response time
+void updateCSVFile(const std::string& filename, double episodeReward, int num_of_steps, bool success, double mean_rt) {
     std::fstream file;
     int episodeNumber = 1;
 
@@ -171,7 +178,7 @@ void updateCSVFile(const std::string& filename, double episodeReward, int num_of
 
     // If file does not exist, write headers
     if (!fileExists) {
-        file << "Episode Number,Reward,Number of steps,Status\n";
+        file << "Episode Number,Reward,Number of steps,Status,Mean Response Time\n";
     }
     else {
         // Read the last episode number if the file exists
@@ -193,9 +200,10 @@ void updateCSVFile(const std::string& filename, double episodeReward, int num_of
     }
 
     // Write the new episode data
-    file << episodeNumber << "," << episodeReward << "," << num_of_steps << "," << success << "\n";
+    file << episodeNumber << "," << episodeReward << "," << num_of_steps << "," << success << "," << mean_rt << "\n";
     file.close();
 }
+
 
 // Function to normalize depth values between 0 and 255
 arma::mat normalizeDepthImage(const arma::mat& depthImage) {
@@ -316,13 +324,15 @@ int main(int argc, char** argv) {
     bool loadModel = true;
 
     UAV uav;
-    int num_of_episodes = 1000;
+    int num_of_episodes = 4000;
     int counter_for_episodes = 0;
 
     // To scale down the image
     int new_height = 40;
+    int depth_height = 16;
     int new_width = 40;
-    int depth = 4;
+    int depth_width = 16;
+    int depth = 3;
 
     uav.target_location_x_ = -6182.140626 / 100;
     uav.target_location_y_ = 2087.279297 / 100;
@@ -330,15 +340,15 @@ int main(int argc, char** argv) {
     bool handle_err_ = false;
     std::string processName = "CityParkEnv.exe";
 
-    const double stepSize = 0.005; // Adjusted learning rate
+    const double stepSize = 0.00001; // Adjusted learning rate
     const size_t batchSize = 1;       // Increased batch size for stability
-    const size_t maxIterations = 1000; // Increased number of iterations for convergence
-    const double tolerance = 1e-4;     // Adjusted tolerance for convergence speed
-    const bool shuffle = true;         // Enable shuffling of data each epoch
+    const size_t maxIterations = 1; // Increased number of iterations for convergence
+    const double tolerance = 1e-6;     // Adjusted tolerance for convergence speed
+    const bool shuffle = false;         // Enable shuffling of data each epoch
     const bool resetPolicy = false;    // Based on specific use case
-    const bool exactObjective = true;  // Keep using the exact objective
+    const bool exactObjective = false;  // Keep using the exact objective
     // Set parameters for the Adam optimizer.
-    ens::Adam Optimizer(
+    ens::Adam Optimizer; (
         stepSize,       // Step size of the optimizer.
         batchSize,      // Batch size. Number of data points that are used in each teration.
         0.9,            // Exponential decay rate for the first moment estimates.
@@ -352,7 +362,7 @@ int main(int argc, char** argv) {
 
     // SAC hyperparameters and configuration
     TrainingConfig config;
-    config.StepSize() = 0.01;
+    config.StepSize() = 0.000000000001;
     config.Discount() = 0.9;
     config.TargetNetworkSyncInterval() = 1;
     config.ExplorationSteps() = 1;
@@ -360,8 +370,8 @@ int main(int argc, char** argv) {
     config.UpdateInterval() = 1;
     config.Rho() = 0.005;
 
-    constexpr size_t StateDimension = 258;
-    constexpr size_t ActionDimension = 2;
+    constexpr size_t StateDimension = 514;
+    constexpr size_t ActionDimension = 3;
 
     using UAVEnv = ContinuousActionEnv<StateDimension, ActionDimension>;
 
@@ -471,7 +481,7 @@ int main(int argc, char** argv) {
       
         std::cout << "System discovered." << std::endl;
 
-        // CNN Network
+        //// CNN Network
         FFN < MeanSquaredError, RandomInitialization > cnn;
 
         if (loadModel) {
@@ -515,8 +525,8 @@ int main(int argc, char** argv) {
         }
         else
         {
-            policyNetwork.Add<Linear>(258);
-            policyNetwork.Add<LeakyReLU>();
+            policyNetwork.Add<Linear>(514);
+            policyNetwork.Add<FTSwish>();
 
             policyNetwork.Add<Linear>(256);
             policyNetwork.Add<FTSwish>();
@@ -527,7 +537,7 @@ int main(int argc, char** argv) {
             policyNetwork.Add<Linear>(12);
             policyNetwork.Add<HardTanH>();
 
-            policyNetwork.Add<Linear>(2);
+            policyNetwork.Add<Linear>(3);
             policyNetwork.Add<TanH>();
         }
 
@@ -541,8 +551,8 @@ int main(int argc, char** argv) {
         }
         else
         {
-            qNetwork.Add<Linear>(258);
-            qNetwork.Add<LeakyReLU>();
+            qNetwork.Add<Linear>(514);
+            qNetwork.Add<FTSwish>();
 
             qNetwork.Add<Linear>(256);
             qNetwork.Add<FTSwish>();
@@ -561,11 +571,6 @@ int main(int argc, char** argv) {
             config, qNetwork, policyNetwork, replayMethod);
 
         agent.Deterministic() = false;
-
-        /*MultirotorRpcLibClient client;
-        if (!client.ping()) {
-            client.confirmConnection();
-        }*/
 
         mavsdk::Telemetry telemetry = Telemetry{ system };
 
@@ -645,15 +650,11 @@ int main(int argc, char** argv) {
         
 
         arma::mat input_st;
-        input_st.set_size(256);
+        input_st.set_size(514);
         input_st.fill(255);
-        double any_x = 0;
-        double any_y = 0;
-        arma::vec temp_pr = { any_x, any_y };
-        input_st.insert_rows(input_st.n_rows, temp_pr);
 
         arma::mat output;
-        output.set_size(256);
+        output.set_size(514);
         output.fill(255);
 
         arma::mat q_net_output;
@@ -681,129 +682,34 @@ int main(int argc, char** argv) {
 
         handle_err_ = false;
 
+        std::vector<unsigned long long> response_time_v_;
+
+
         do {
             auto start = std::chrono::high_resolution_clock::now();
-
-            std::vector<msr::airlib::ImageCaptureBase::ImageResponse> responses_dum;
-            std::vector<msr::airlib::ImageCaptureBase::ImageResponse>& responses = responses_dum;
-            try {
-                responses = client.simGetImages(requests);
-            }
-            catch (const std::exception& ex) {
-                std::cerr << "An error occurred: " << ex.what() << std::endl;
-                handle_err_ = true;
-                break;
-            }
-            if (handle_err_) {
-                std::cout << "inside if statement! \n";
-                //throw std::exception();
-                break;
-            }
-
-
-            // Check if responses is empty outside of the try-catch block
-            if (responses.empty()) {
-                std::cout << "No image data received." << std::endl;
-                // Use 'continue' only if this code is inside a loop
-                // continue; 
-            }
-
-
-
-            // Convert RGB and depth image data to Armadillo matrices
-            arma::mat rgbImage(responses[0].height, responses[0].width * 3);  //  RGB image
-            arma::mat depthImage(responses[1].height, responses[1].width);    //  depth image
-
-            // Fill the matrices
-            // RGB image
-            for (int r = 0; r < responses[0].height; ++r) {
-                for (int c = 0; c < responses[0].width; ++c) {
-                    for (int channel = 0; channel < 3; ++channel) {
-                        rgbImage(r, c * 3 + channel) = static_cast<double>(responses[0].image_data_uint8[r * responses[0].width * 3 + c * 3 + channel]);
-                    }
-                }
-            }
-
-            // Depth image
-            for (int r = 0; r < responses[1].height; ++r) {
-                for (int c = 0; c < responses[1].width; ++c) {
-                    depthImage(r, c) = static_cast<double>(responses[1].image_data_float[r * responses[1].width + c]);
-                }
-            }
-
-            float maxThreshold = 7.0f;
-
-            // Apply the threshold
-            // Any value above 3 meters is set to 3 meters
-            depthImage = arma::clamp(depthImage, 0, maxThreshold);
-
-            // Resize the images 
-            arma::mat resizedRgb = ResizeImage(rgbImage, new_height, new_width * 3);  // Resize RGB
-            arma::mat resizedDepth = ResizeImage(depthImage, new_height, new_width);   // Resize depth
-
-            //arma::mat normalizedDepth = normalizeDepthImage(resizedDepth);
-
-            // Flatten and concatenate the channels
-            int totalElements = new_height * new_width * depth; // 40x40x4
-            arma::mat combinedImage(totalElements, 1); // One column for one image
-
-            // Interleaving RGB and depth channels
-            for (int i = 0; i < new_height * new_width; ++i) {
-                combinedImage(i, 0) = resizedRgb(i / new_width, (i % new_width) * 3);     // R
-                combinedImage(i + new_height * new_width, 0) = resizedRgb(i / new_width, (i % new_width) * 3 + 1); // G
-                combinedImage(i + 2 * new_height * new_width, 0) = resizedRgb(i / new_width, (i % new_width) * 3 + 2); // B
-                combinedImage(i + 3 * new_height * new_width, 0) = resizedDepth(i / new_width, i % new_width);         // Depth
-            }
-
-            //// Extracting individual channels
-            //if (switchee) {
-            //    arma::mat redChannel = resizedRgb.submat(0, 0, resizedRgb.n_rows - 1, resizedRgb.n_cols / 3 - 1);
-            //    arma::mat greenChannel = resizedRgb.submat(0, resizedRgb.n_cols / 3, resizedRgb.n_rows - 1, 2 * resizedRgb.n_cols / 3 - 1);
-            //    arma::mat blueChannel = resizedRgb.submat(0, 2 * resizedRgb.n_cols / 3, resizedRgb.n_rows - 1, resizedRgb.n_cols - 1);
-
-            //    // Saving each channel to a separate file
-            //    SaveChannelToFile(redChannel, "red_channel.txt");
-            //    SaveChannelToFile(greenChannel, "green_channel.txt");
-            //    SaveChannelToFile(blueChannel, "blue_channel.txt");
-            //    SaveChannelToFile(combinedImage, "depth_channel.txt");
-            //    switchee = false;
-            //}
-
-
-            /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-            /*  Execute an action and get the reward   */
-            /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-
-            cnn.Predict(combinedImage, output);
-            double pos_x = 0.0, pos_y = 0.0;
-
-            try {
-                pos_x = client.getMultirotorState().getPosition().x();
-                pos_y = client.getMultirotorState().getPosition().y();
-            }
-            catch (const std::exception& ex) {
-                std::cerr << "An error occurred while retrieving position: " << ex.what() << std::endl;
-                handle_err_ = true;
-                break;
-            }
-            if (handle_err_) {
-                std::cout << "inside if statement! \n";
-                //throw std::exception();
-                break;
-            }
-
-            arma::vec temp = { pos_x, pos_y };
-            output.insert_rows(output.n_rows, temp);
 
             UAVEnv::State currentState(input_st);
 
             agent.State().Data() = input_st;
 
             // Predict the action using the current state
+            float right_vel = 0.0;
+            float left_vel = 0.0;
+            float right_m_s = 0.0;
             agent.SelectAction();
 
-            float forward_m_s = { abs(float(agent.Action().action[0]) * 0.4f) };     /**< @brief Velocity forward (in metres/second) */
-            float right_m_s = { float(agent.Action().action[1]) * 0.4f };       /**< @brief Velocity right (in metres/second) */
+            right_vel = abs(float(agent.Action().action[1]))  ;
+            left_vel = abs(float(agent.Action().action[2])) ;
+
+            float forward_m_s = { abs(float(agent.Action().action[0]) * 0.8f) };     /**< @brief Velocity forward (in metres/second) */
+
+            if (right_vel > left_vel) {
+                right_m_s = right_vel *0.6f;       /**< @brief Velocity right (in metres/second) */
+            }
+            else {
+                right_m_s = (-left_vel) *0.6f;       /**< @brief Velocity right (in metres/second) */
+            }
+            
             float down_m_s = 0;// actionVec[2] * 0.001;        /**< @brief Velocity down (in metres/second) */
             float yawspeed_deg_s = 0;//{ float(agent.Action().action[2]) * 2.5f };  /**< @brief Yaw angular rate (in degrees/second, positive for
             //clock-wise looking from above) */
@@ -826,6 +732,126 @@ int main(int argc, char** argv) {
                 //throw std::exception();
                 break;
             }
+
+            std::vector<msr::airlib::ImageCaptureBase::ImageResponse> responses_dum;
+            std::vector<msr::airlib::ImageCaptureBase::ImageResponse>& responses = responses_dum;
+            try {
+                responses = client.simGetImages(requests);
+            }
+            catch (const std::exception& ex) {
+                std::cerr << "An error occurred: " << ex.what() << std::endl;
+                handle_err_ = true;
+                break;
+            }
+            if (handle_err_) {
+                std::cout << "inside if statement! \n";
+                //throw std::exception();
+                break;
+            }
+
+
+            // Check if responses is empty outside of the try-catch block
+            if (responses.empty()) {
+                std::cout << "No image data received." << std::endl;
+                
+                continue; 
+            }
+
+
+
+            // Convert RGB and depth image data to Armadillo matrices
+           arma::mat rgbImage(responses[0].height, responses[0].width * 3);  //  RGB image
+            arma::mat depthImage(responses[1].height, responses[1].width);    //  depth image
+
+            // Fill the matrices
+            // RGB image
+            for (int r = 0; r < responses[0].height; ++r) {
+                for (int c = 0; c < responses[0].width; ++c) {
+                    for (int channel = 0; channel < 3; ++channel) {
+                        rgbImage(r, c * 3 + channel) = static_cast<double>(responses[0].image_data_uint8[r * responses[0].width * 3 + c * 3 + channel]);
+                    }
+                }
+            }
+
+            // Depth image
+            for (int r = 0; r < responses[1].height; ++r) {
+                for (int c = 0; c < responses[1].width; ++c) {
+                    depthImage(r, c) = static_cast<double>(responses[1].image_data_float[r * responses[1].width + c]);
+                }
+            }
+
+            float maxThreshold = 7.0f;
+
+            // Apply the threshold
+            // Any value above 7 meters is set to 3 meters
+            depthImage = arma::clamp(depthImage, 0, maxThreshold);
+
+            // Resize the images 
+            arma::mat resizedRgb = ResizeImage(rgbImage, new_height, new_width * 3);  // Resize RGB
+            arma::mat resizedDepth = ResizeImage(depthImage, depth_height, depth_width);   // Resize depth
+
+            
+
+            // Flatten RGB channels
+            int totalElements = new_height * new_width * depth; // 40x40x4
+            arma::mat combinedImage(totalElements, 1); // One column for one image
+
+            //// Interleaving RGB and depth channels
+            for (int i = 0; i < new_height * new_width; ++i) {
+                combinedImage(i, 0) = resizedRgb(i / new_width, (i % new_width) * 3);     // R
+                combinedImage(i + new_height * new_width, 0) = resizedRgb(i / new_width, (i % new_width) * 3 + 1); // G
+                combinedImage(i + 2 * new_height * new_width, 0) = resizedRgb(i / new_width, (i % new_width) * 3 + 2); // B
+            }
+
+            int depthTotalElements = depth_height * depth_width; // 40x40
+            arma::mat depthColVector(depthTotalElements, 1); // One column for depth image
+
+            for (int i = 0; i < depthTotalElements; ++i) {
+                depthColVector(i, 0) = resizedDepth(i / depth_width, i % depth_width);
+            }
+
+            //// Extracting individual channels
+            //if (switchee) {
+            //    arma::mat redChannel = resizedRgb.submat(0, 0, resizedRgb.n_rows - 1, resizedRgb.n_cols / 3 - 1);
+            //    arma::mat greenChannel = resizedRgb.submat(0, resizedRgb.n_cols / 3, resizedRgb.n_rows - 1, 2 * resizedRgb.n_cols / 3 - 1);
+            //    arma::mat blueChannel = resizedRgb.submat(0, 2 * resizedRgb.n_cols / 3, resizedRgb.n_rows - 1, resizedRgb.n_cols - 1);
+
+            //    // Saving each channel to a separate file
+            //    SaveChannelToFile(redChannel, "red_channel.txt");
+            //    SaveChannelToFile(greenChannel, "green_channel.txt");
+            //    SaveChannelToFile(blueChannel, "blue_channel.txt");
+            //    SaveChannelToFile(combinedImage, "depth_channel.txt");
+            //    switchee = false;
+            //}
+
+
+            /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+            /*  Execute an action and get the reward   */
+            /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+
+            cnn.Predict(combinedImage, output);
+
+            double pos_x = 0.0, pos_y = 0.0;
+
+            try {
+                pos_x = client.getMultirotorState().getPosition().x();
+                pos_y = client.getMultirotorState().getPosition().y();
+            }
+            catch (const std::exception& ex) {
+                std::cerr << "An error occurred while retrieving position: " << ex.what() << std::endl;
+                handle_err_ = true;
+                break;
+            }
+            if (handle_err_) {
+                std::cout << "inside if statement! \n";
+                //throw std::exception();
+                break;
+            }
+
+            arma::vec temp = { pos_x, pos_y };
+            output.insert_rows(output.n_rows, depthColVector);
+            output.insert_rows(output.n_rows, temp);
+            input_st = output;
 
             uav.drone_status_ = collision;
 
@@ -877,14 +903,14 @@ int main(int argc, char** argv) {
             UAVEnv::State nextState(output);
             nextState.Data() = output;
 
-            input_st = output;
+            
 
 
             // flag to end the episode
             done = uav.reached_the_target_loc_ || uav.drone_status_;
 
 
-
+            std::cout << "done? : " << done << std::endl;
             // Store experience in the replay buffer
             replayMethod.Store(agent.State().Encode(), agent.Action(), reward, nextState, done, 0.99);
             episodeReturn += reward;
@@ -905,7 +931,7 @@ int main(int argc, char** argv) {
 
             auto stop = std::chrono::high_resolution_clock::now();
             times = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
-
+            response_time_v_.push_back(times);
             std::cout << "Response time: " << times << " milliseconds" << std::endl;
             std::cout << "handle_err_: " << handle_err_ << std::endl;
 
@@ -941,8 +967,17 @@ int main(int argc, char** argv) {
                 sleep_for(seconds(3));
             }
 
-            updateCSVFile("rewards.csv", episodeReturn, agent.TotalSteps(), uav.success);
 
+            double accum_rt = 0;
+            for (int t = 0; t < response_time_v_.size(); t++) {
+                accum_rt += response_time_v_[t];
+            }
+            double mean_rt = accum_rt / response_time_v_.size();
+
+            updateCSVFile("rewards.csv", episodeReturn, agent.TotalSteps(), uav.success, mean_rt);
+            
+
+            response_time_v_.clear();
             std::cout << "\n\n##########################\n\n";
             std::cout << " Total return: " << episodeReturn
                 << "\nTotal steps: " << agent.TotalSteps();
